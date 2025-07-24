@@ -7,59 +7,48 @@ name: Build and deploy Node.js app to Azure Web App - xr-messagibg
 on:
   push:
     branches:
-      - production  
+      - production  # or your main branch (e.g. staging or production)
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    - name: Checkout source
+      uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
 
-      - name: Install server dependencies
-        working-directory: server
-        run: npm install
+    - name: Install frontend dependencies
+      working-directory: ./desktop-app
+      run: npm install
 
-      # Optional: Add a build step here if you need to transpile or bundle
+    - name: Install backend dependencies
+      working-directory: ./server
+      run: npm install
 
-      - name: Archive server folder for deployment
-        run: zip -r release.zip server
+    # Optional: build if needed (like for React/Angular/Vite)
+    # - name: Build frontend
+    #   working-directory: ./desktop-app
+    #   run: npm run build
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: node-app
-          path: release.zip
+    # Optional: Move static frontend files to backend if server serves them
+    - name: Copy frontend to backend (if needed)
+      run: |
+        mkdir -p server/public
+        cp -r desktop-app/* server/public/
 
-  deploy:
-    runs-on: ubuntu-latest
-    needs: build
-    environment:
-      name: 'Production'
+    - name: Zip deployment package
+      run: |
+        zip -r deploy.zip server node_modules package.json package-lock.json
 
-    steps:
-      - name: Download artifact from build job
-        uses: actions/download-artifact@v4
-        with:
-          name: node-app
-
-      - name: Unzip artifact for deployment
-        run: unzip release.zip
-
-      - name: Remove ZIP before deployment
-        run: rm -f release.zip
-
-      - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v3
-        id: deploy-to-webapp
-        with:
-          app-name: 'xr-messagibg'  # remove space if wrong
-          slot-name: 'Production'
-          package: ./server
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_B13970A649E545C293BE9252353C16B1 }} 
+    - name: Deploy to Azure Web App
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: xr-messagibg
+        slot-name: production
+        package: ./server
+        publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_B13970A649E545C293BE9252353C16B1 }} 
