@@ -1,10 +1,11 @@
 {
   "name": "xr-messaging-root",
   "version": "1.0.0",
-  "scripts": {
-  "start": "node server.js",
-  "build": "cd desktop-app && npm install && npm run build"
-},
+   "scripts": {
+    "start": "npm-run-all --parallel start:server start:desktop",
+    "start:server": "cd server && npm start",
+    "start:desktop": "cd desktop-app && npm start"
+   },
   "devDependencies": {
     "npm-run-all": "^4.1.5"
   }
