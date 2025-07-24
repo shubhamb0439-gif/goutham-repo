@@ -1,13 +1,8 @@
 const WebSocket = require('ws');
-const express = require('express');
-const http = require('http');
+// Bind to ALL interfaces so any device on LAN/WAN can connect:
+const wss = new WebSocket.Server({ host: '0.0.0.0', port: 8080, clientTracking: true });
 
-const app = express();
-const server = http.createServer(app); //  Create the HTTP server first
-
-const wss = new WebSocket.Server({ server, clientTracking: true });
-
-console.log('[WS] Server setup initialized...');
+console.log('[WS] Server running on ws://0.0.0.0:8080');
 
 const clients = new Set();
 const messageHistory = [];
@@ -24,6 +19,7 @@ wss.on('connection', (ws) => {
   ws.on('pong', () => heartbeat(ws));
   ws.on('error', (error) => console.error('[WS ERROR]', error));
 
+  // On new connection, send the last 10 messages (history)
   if (messageHistory.length > 0) {
     ws.send(JSON.stringify({
       type: 'message_history',
@@ -32,6 +28,7 @@ wss.on('connection', (ws) => {
   }
 
   ws.on('message', (message) => {
+    // DEBUG: Log every message received
     console.log('[WS] Received:', message.toString());
 
     let data;
@@ -58,6 +55,7 @@ wss.on('connection', (ws) => {
         break;
 
       case 'message':
+        // Add unique ID and timestamp
         const fullMessage = {
           ...data,
           id: Date.now(),
@@ -86,14 +84,42 @@ wss.on('connection', (ws) => {
         });
         break;
 
+      // ==== WEBRTC SIGNALING (OFFER/ANSWER/ICE) ====
       case 'offer':
-      case 'answer':
-      case 'ice-candidate':
-        broadcastToTarget(data, ws);
+        console.log('[WEBRTC] Offer from', from || 'unknown', 'to', to);
+        broadcastToTarget({
+          type: 'offer',
+          sdp: data.sdp,
+          from,
+          to
+        }, ws);
         break;
+
+      case 'answer':
+        console.log('[WEBRTC] Answer from', from || 'unknown', 'to', to);
+        broadcastToTarget({
+          type: 'answer',
+          sdp: data.sdp,
+          from,
+          to
+        }, ws);
+        break;
+
+      case 'ice-candidate':
+        // NOTE: candidate should always include { candidate, sdpMid, sdpMLineIndex }
+        console.log('[WEBRTC] ICE candidate from', from || 'unknown', 'to', to);
+        broadcastToTarget({
+          type: 'ice-candidate',
+          candidate: data.candidate,
+          from,
+          to
+        }, ws);
+        break;
+      // =============================================
 
       case 'control-command':
       case 'control_command':
+        console.log('[CONTROL] Forwarding control command:', data.command);
         broadcastAll({
           type: 'control-command',
           command: data.command,
@@ -102,6 +128,7 @@ wss.on('connection', (ws) => {
         break;
 
       case 'status_report':
+        console.log('[STATUS] Report from', from);
         broadcastToDesktop({
           type: 'status_report',
           from: from,
@@ -122,7 +149,8 @@ wss.on('connection', (ws) => {
   });
 });
 
-// Broadcast helper functions
+// ==== Broadcast helpers ====
+
 function broadcastAll(data) {
   const msg = JSON.stringify(data);
   clients.forEach(c => {
@@ -137,6 +165,7 @@ function broadcastExcept(sender, data) {
   });
 }
 
+// Only sends to the desktop client(s)
 function broadcastToDesktop(data) {
   const msg = JSON.stringify(data);
   clients.forEach(c => {
@@ -149,13 +178,13 @@ function broadcastToDesktop(data) {
   });
 }
 
+// Targeted broadcast by xrId or deviceName (used for offer, answer, ICE, etc)
 function broadcastToTarget(data, sender) {
-  const { to } = data;
-  if (to) {
+  if (data.to) {
     let sent = false;
     clients.forEach(c => {
       if (
-        (c.xrId === to || c.deviceName === to) &&
+        (c.xrId === data.to || c.deviceName === data.to) &&
         c.readyState === WebSocket.OPEN &&
         c !== sender
       ) {
@@ -164,9 +193,10 @@ function broadcastToTarget(data, sender) {
       }
     });
     if (!sent) {
-      console.warn(`[WS] No client found for target: ${to}`);
+      console.warn(`[WS] No client found for target xrId/deviceName: ${data.to}`);
     }
   } else {
+    // If 'to' not provided, send to everyone except sender (failsafe)
     broadcastExcept(sender, data);
   }
 }
@@ -177,12 +207,13 @@ function broadcastDeviceList() {
     .map(c => ({ name: c.deviceName, xrId: c.xrId }));
 
   const msg = JSON.stringify({ type: 'device_list', devices: deviceList });
+
   clients.forEach(c => {
     if (c.readyState === WebSocket.OPEN) c.send(msg);
   });
 }
 
-// Heartbeat interval
+// Heartbeat ping every 30s to keep connections alive (avoid idle timeout)
 const interval = setInterval(() => {
   wss.clients.forEach(ws => {
     if (ws.isAlive === false) {
@@ -196,30 +227,17 @@ const interval = setInterval(() => {
 
 wss.on('close', () => clearInterval(interval));
 
-// Graceful shutdown
+// Graceful shutdown (SIGINT, SIGTERM)
 process.on('SIGINT', () => {
   console.log('[WS] Closing server...');
   wss.close();
-  server.close();
   process.exit();
 });
 process.on('SIGTERM', () => {
   console.log('[WS] Closing server...');
   wss.close();
-  server.close();
   process.exit();
 });
 process.on('uncaughtException', (err) => {
   console.error('[WS ERROR] Uncaught exception:', err);
-});
-
-//  Health check endpoint for Azure
-app.get('/', (req, res) => {
-  res.send('WebSocket server is running!');
-});
-
-// Start both HTTP + WS server
-const PORT = process.env.PORT || 8080;
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`HTTP+WebSocket server is running on http://0.0.0.0:${PORT}`);
 });
