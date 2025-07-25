@@ -6,7 +6,7 @@ name: Build and deploy Node.js app to Azure Web App - xr-messagibg
 on:
   push:
     branches:
-      - production   # or "production" if that's your deployment branch
+      - production
   workflow_dispatch:
 
 jobs:
@@ -36,10 +36,15 @@ jobs:
         working-directory: backend
         run: npm ci
 
+      - name: Set backend entry point
+        working-directory: backend
+        run: |
+          echo '{ "name": "xr-backend", "version": "1.0.0", "main": "server.js", "scripts": { "start": "node server.js" } }' > package.json
+
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v2
         with:
-          app-name: xr-messagibg               # ⬅️ Replace with your Azure Web App name
-          slot-name: Production                         # Or your deployment slot
-          package: ./backend
+          app-name: xr-messagibg
+          slot-name: Production
+          package: .
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_F686C13FE2954C6FAEF2D327F4D8339B }}
