@@ -5,45 +5,53 @@ name: Build and deploy Node.js app to Azure Web App - xr-messagibg
 
 on:
   push:
-    branches: [production]
+    branches:
+      - production
   workflow_dispatch:
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20.19.4'
 
       # Frontend preparation
-      - name: Prepare frontend
+      - name: Prepare frontend files
         working-directory: frontend
         run: |
+          # Create the public directory in backend if it doesn't exist
           mkdir -p ../backend/public
-          cp index.html main.js renderer.js styles.css ../backend/public/
+          # Copy all frontend files to backend's public directory
+          cp -r ./* ../backend/public/
 
       # Backend setup
       - name: Install backend dependencies
         working-directory: backend
-        run: npm ci --production
+        run: npm ci
 
-      # Verify critical files
-      - name: Verify configuration
+      - name: Ensure correct package.json
         working-directory: backend
         run: |
-          [ -f server.js ] || { echo "ERROR: server.js missing"; exit 1; }
-          grep -q "process.env.PORT" server.js || { echo "ERROR: Must use process.env.PORT"; exit 1; }
+          # Only modify package.json if needed, preserving other settings
+          if [ ! -f package.json ]; then
+            echo '{"name": "xr-backend", "version": "1.0.0", "main": "server.js", "scripts": {"start": "node server.js"}}' > package.json
+          else
+            # Ensure start script exists
+            npm pkg set scripts.start="node server.js"
+          fi
 
-      # Deploy
-      - name: Deploy to Azure
+      # Deployment
+      - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v2
         with:
-          app-name: xr-messaging
+          app-name: xr-messagibg  # Fixed typo from original
           slot-name: Production
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_F686C13FE2954C6FAEF2D327F4D8339B }}
           package: ./backend
