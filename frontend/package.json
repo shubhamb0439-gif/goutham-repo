@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "main.js",
   "scripts": {
+    "build": "mkdir -p dist && cp index.html main.js renderer.js styles.css dist/",
     "start": "electron ."
   },
   "dependencies": {

@@ -5,75 +5,45 @@ name: Build and deploy Node.js app to Azure Web App - xr-messagibg
 
 on:
   push:
-    branches:
-      - production
+    branches: [production]
   workflow_dispatch:
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20.19.4'
-          cache: 'npm'
 
-      # Install backend dependencies first
+      # Frontend preparation
+      - name: Prepare frontend
+        working-directory: frontend
+        run: |
+          mkdir -p ../backend/public
+          cp index.html main.js renderer.js styles.css ../backend/public/
+
+      # Backend setup
       - name: Install backend dependencies
         working-directory: backend
         run: npm ci --production
 
-      # Build and prepare frontend
-      - name: Build frontend
-        working-directory: frontend
-        run: |
-          npm ci
-          npm run build
-          mkdir -p ../backend/public
-          cp -r dist/* ../backend/public/
-
-      # Create production-ready package.json
-      - name: Configure production startup
+      # Verify critical files
+      - name: Verify configuration
         working-directory: backend
         run: |
-          # Create minimal production package.json if doesn't exist
-          if [ ! -f package.json ]; then
-            echo '{
-              "name": "xr-backend",
-              "version": "1.0.0",
-              "main": "server.js",
-              "scripts": {
-                "start": "node server.js"
-              },
-              "dependencies": {
-                "express": "^4.18.2",
-                "ws": "^8.16.0"
-              }
-            }' > package.json
-          fi
-          
-          # Ensure production dependencies are installed
-          npm install --production
+          [ -f server.js ] || { echo "ERROR: server.js missing"; exit 1; }
+          grep -q "process.env.PORT" server.js || { echo "ERROR: Must use process.env.PORT"; exit 1; }
 
-      # Add health check verification
-      - name: Verify health endpoint
-        working-directory: backend
-        run: |
-          if ! grep -q "app.get(['/health', '/health/']" server.js; then
-            echo "ERROR: Missing health endpoint in server.js"
-            exit 1
-          fi
-
-      # Deploy to Azure
-      - name: Deploy to Azure Web App
+      # Deploy
+      - name: Deploy to Azure
         uses: azure/webapps-deploy@v2
         with:
-          app-name: xr-messaging  # Corrected name
+          app-name: xr-messaging
           slot-name: Production
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_F686C13FE2954C6FAEF2D327F4D8339B }}
           package: ./backend
