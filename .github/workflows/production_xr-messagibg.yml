@@ -26,14 +26,18 @@ jobs:
         working-directory: frontend
         run: npm install --force
 
-      - name: Build frontend (if you have a build step)
+      # Create the build directory structure that 'serve' expects
+      - name: Prepare frontend files
         working-directory: frontend
-        run: npm run build  # Add this if you have a build step
+        run: |
+          mkdir -p build
+          cp index.html *.js *.css build/
 
-      - name: Copy frontend assets to backend
+      # Copy frontend to backend/public (for your backend to serve)
+      - name: Copy frontend to backend
         run: |
           mkdir -p backend/public
-          cp -r frontend/* backend/public/
+          cp -r frontend/build/* backend/public/
 
       - name: Install backend dependencies
         working-directory: backend
