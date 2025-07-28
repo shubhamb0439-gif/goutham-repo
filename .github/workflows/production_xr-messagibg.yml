@@ -1,3 +1,4 @@
+
 name: Build and deploy Node.js backend to Azure Web App - xr-messagibg
 
 on:
@@ -11,41 +12,39 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name:  Checkout code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name:  Set up Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20.19.4'
 
-      - name:  Install root dependencies (e.g. npm-run-all)
+       # Debug: Confirm npm-run-all is installed
+      - name: 📦 Install root dependencies (npm-run-all)
         run: npm install
 
-      - name:  Install frontend dependencies
+      # Install frontend dependencies
+      - name: Install frontend dependencies
         working-directory: frontend
         run: npm install --force
 
-      - name:  Build frontend
-        working-directory: frontend
-        run: npm run build
-
-      - name:  Copy built frontend to backend/public
+      # Copy frontend assets to backend/public
+      - name: Copy frontend assets to backend
         run: |
           mkdir -p backend/public
-          cp -r frontend/build/* backend/public/
-        # For Angular, use:
-        # cp -r frontend/dist/<your-project-name>/* backend/public/
-
-      - name:  Install backend dependencies
+          cp frontend/index.html frontend/*.js frontend/*.css backend/public/
+      # Install backend dependencies (includes npm-run-all)
+      - name: Install backend dependencies
         working-directory: backend
         run: npm install --force
 
-      - name:  Zip backend for deployment
+      # Zip backend folder for deployment
+      - name: Zip backend for deployment
         working-directory: backend
         run: zip -r ../release.zip .
 
-      - name:  Upload artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: backend-release
@@ -56,18 +55,18 @@ jobs:
     needs: build-and-deploy
 
     steps:
-      - name:  Download artifact
+      - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: backend-release
 
-      - name:  Unzip artifact
+      - name: Unzip artifact
         run: unzip release.zip
 
-      - name:  Remove zip file
+      - name: Remove zip file
         run: rm release.zip
 
-      - name:  Deploy to Azure Web App
+      - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'xr-messagibg'
