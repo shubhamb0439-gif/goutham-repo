@@ -19,27 +19,28 @@ jobs:
         with:
           node-version: '20.19.4'
 
-       # Debug: Confirm npm-run-all is installed
-      - name: 📦 Install root dependencies (npm-run-all)
+      - name: Install root dependencies (e.g. npm-run-all)
         run: npm install
 
-      # Install frontend dependencies
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm install --force
 
-      # Copy frontend assets to backend/public
-      - name: Copy frontend assets to backend
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Copy built frontend to backend/public
         run: |
           mkdir -p backend/public
-          cp frontend/index.html frontend/*.js frontend/*.css backend/public/
+          cp -r frontend/build/* backend/public/
+        # For Angular, use:
+        # cp -r frontend/dist/<your-project-name>/* backend/public/
 
-      # Install backend dependencies (includes npm-run-all)
       - name: Install backend dependencies
         working-directory: backend
         run: npm install --force
 
-      # Zip backend folder for deployment
       - name: Zip backend for deployment
         working-directory: backend
         run: zip -r ../release.zip .
