@@ -1,16 +1,45 @@
+const express = require('express');
 const WebSocket = require('ws');
-// Bind to ALL interfaces so any device on LAN/WAN can connect:
-const wss = new WebSocket.Server({ host: '0.0.0.0', port: 8080, clientTracking: true });
+const path = require('path');
+const fs = require('fs');
 
-console.log('[WS] Server running on ws://0.0.0.0:8080');
+// Initialize Express app
+const app = express();
+const PORT = process.env.PORT || 8080;
 
+// Configure static files
+const publicPath = path.resolve(__dirname, 'public');
+app.use(express.static(publicPath));
+
+// Health check endpoint (critical for Azure)
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    websocketClients: wss?.clients?.size || 0
+  });
+});
+
+// SPA fallback route
+app.get('*', (req, res) => {
+  res.sendFile(path.join(publicPath, 'index.html'));
+});
+
+// Create HTTP server
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`[HTTP] Server running on port ${PORT}`);
+  console.log(`[HTTP] Serving static files from ${publicPath}`);
+});
+
+// WebSocket Server Setup
+const wss = new WebSocket.Server({ server, clientTracking: true });
 const clients = new Set();
 const messageHistory = [];
 
-// --- Utility for heartbeat (keepalive) ---
-const heartbeat = (ws) => {
-  ws.isAlive = true;
-};
+console.log(`[WS] WebSocket server running on ws://0.0.0.0:${PORT}`);
+
+// Heartbeat function
+const heartbeat = (ws) => { ws.isAlive = true; };
 
 wss.on('connection', (ws) => {
   clients.add(ws);
@@ -19,7 +48,7 @@ wss.on('connection', (ws) => {
   ws.on('pong', () => heartbeat(ws));
   ws.on('error', (error) => console.error('[WS ERROR]', error));
 
-  // On new connection, send the last 10 messages (history)
+  // Send message history to new connections
   if (messageHistory.length > 0) {
     ws.send(JSON.stringify({
       type: 'message_history',
@@ -28,19 +57,18 @@ wss.on('connection', (ws) => {
   }
 
   ws.on('message', (message) => {
-    // DEBUG: Log every message received
     console.log('[WS] Received:', message.toString());
 
     let data;
     try {
       data = JSON.parse(message);
     } catch {
-      console.warn('[WS WARNING] Non-JSON message received:', message.toString());
+      console.warn('[WS WARNING] Non-JSON message:', message.toString());
       return;
     }
 
-    if (!data || typeof data !== 'object' || !data.type) {
-      console.warn('[WS WARNING] Invalid message object:', data);
+    if (!data?.type) {
+      console.warn('[WS WARNING] Invalid message:', data);
       return;
     }
 
@@ -55,7 +83,6 @@ wss.on('connection', (ws) => {
         break;
 
       case 'message':
-        // Add unique ID and timestamp
         const fullMessage = {
           ...data,
           id: Date.now(),
@@ -67,7 +94,6 @@ wss.on('connection', (ws) => {
         break;
 
       case 'clear-messages':
-        console.log('[MESSAGE] Clear requested by', data.by);
         const clearEvent = {
           type: 'message-cleared',
           by: data.by,
@@ -76,64 +102,23 @@ wss.on('connection', (ws) => {
         broadcastAll(clearEvent);
         break;
 
-      case 'clear_confirmation':
-        broadcastToDesktop({
-          type: 'message_cleared',
-          by: data.device,
-          timestamp: new Date().toISOString()
-        });
-        break;
-
-      // ==== WEBRTC SIGNALING (OFFER/ANSWER/ICE) ====
       case 'offer':
-        console.log('[WEBRTC] Offer from', from || 'unknown', 'to', to);
-        broadcastToTarget({
-          type: 'offer',
-          sdp: data.sdp,
-          from,
-          to
-        }, ws);
-        break;
-
       case 'answer':
-        console.log('[WEBRTC] Answer from', from || 'unknown', 'to', to);
-        broadcastToTarget({
-          type: 'answer',
-          sdp: data.sdp,
-          from,
-          to
-        }, ws);
-        break;
-
       case 'ice-candidate':
-        // NOTE: candidate should always include { candidate, sdpMid, sdpMLineIndex }
-        console.log('[WEBRTC] ICE candidate from', from || 'unknown', 'to', to);
         broadcastToTarget({
-          type: 'ice-candidate',
+          type,
+          sdp: data.sdp,
           candidate: data.candidate,
           from,
           to
         }, ws);
         break;
-      // =============================================
 
       case 'control-command':
-      case 'control_command':
-        console.log('[CONTROL] Forwarding control command:', data.command);
         broadcastAll({
           type: 'control-command',
           command: data.command,
           from
-        });
-        break;
-
-      case 'status_report':
-        console.log('[STATUS] Report from', from);
-        broadcastToDesktop({
-          type: 'status_report',
-          from: from,
-          status: data.status,
-          timestamp: new Date().toISOString()
         });
         break;
 
@@ -144,100 +129,76 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     clients.delete(ws);
-    console.log(`[DISCONNECTED] ${ws.deviceName || 'Unknown'} (${ws.xrId || 'no-id'})`);
+    console.log(`[DISCONNECTED] ${ws.deviceName || 'Unknown'}`);
     broadcastDeviceList();
   });
 });
 
-// ==== Broadcast helpers ====
-
+// Broadcast functions
 function broadcastAll(data) {
   const msg = JSON.stringify(data);
-  clients.forEach(c => {
-    if (c.readyState === WebSocket.OPEN) c.send(msg);
-  });
+  clients.forEach(c => c.readyState === WebSocket.OPEN && c.send(msg));
 }
 
 function broadcastExcept(sender, data) {
   const msg = JSON.stringify(data);
-  clients.forEach(c => {
-    if (c !== sender && c.readyState === WebSocket.OPEN) c.send(msg);
-  });
+  clients.forEach(c => c !== sender && c.readyState === WebSocket.OPEN && c.send(msg));
 }
 
-// Only sends to the desktop client(s)
 function broadcastToDesktop(data) {
   const msg = JSON.stringify(data);
   clients.forEach(c => {
-    if (
-      (c.deviceName === 'Desktop App' || c.deviceName === 'Desktop' || c.xrId === 'XR-1238')
-      && c.readyState === WebSocket.OPEN
-    ) {
+    if ((c.deviceName?.includes('Desktop') || c.xrId === 'XR-1238') && c.readyState === WebSocket.OPEN) {
       c.send(msg);
     }
   });
 }
 
-// Targeted broadcast by xrId or deviceName (used for offer, answer, ICE, etc)
 function broadcastToTarget(data, sender) {
-  if (data.to) {
-    let sent = false;
-    clients.forEach(c => {
-      if (
-        (c.xrId === data.to || c.deviceName === data.to) &&
-        c.readyState === WebSocket.OPEN &&
-        c !== sender
-      ) {
-        c.send(JSON.stringify(data));
-        sent = true;
-      }
-    });
-    if (!sent) {
-      console.warn(`[WS] No client found for target xrId/deviceName: ${data.to}`);
+  if (!data.to) return broadcastExcept(sender, data);
+  
+  const msg = JSON.stringify(data);
+  let sent = false;
+  
+  clients.forEach(c => {
+    if ((c.xrId === data.to || c.deviceName === data.to) && c.readyState === WebSocket.OPEN && c !== sender) {
+      c.send(msg);
+      sent = true;
     }
-  } else {
-    // If 'to' not provided, send to everyone except sender (failsafe)
-    broadcastExcept(sender, data);
-  }
+  });
+  
+  if (!sent) console.warn(`[WS] Target not found: ${data.to}`);
 }
 
 function broadcastDeviceList() {
-  const deviceList = Array.from(clients)
+  const devices = Array.from(clients)
     .filter(c => c.deviceName)
     .map(c => ({ name: c.deviceName, xrId: c.xrId }));
-
-  const msg = JSON.stringify({ type: 'device_list', devices: deviceList });
-
-  clients.forEach(c => {
-    if (c.readyState === WebSocket.OPEN) c.send(msg);
-  });
+    
+  broadcastAll({ type: 'device_list', devices });
 }
 
-// Heartbeat ping every 30s to keep connections alive (avoid idle timeout)
+// Heartbeat interval
 const interval = setInterval(() => {
   wss.clients.forEach(ws => {
-    if (ws.isAlive === false) {
-      console.log(`[WS] Terminating dead client: ${ws.deviceName || 'Unknown'}`);
-      return ws.terminate();
-    }
+    if (ws.isAlive === false) return ws.terminate();
     ws.isAlive = false;
     ws.ping();
   });
 }, 30000);
 
-wss.on('close', () => clearInterval(interval));
+// Graceful shutdown
+function shutdown() {
+  console.log('[SHUTDOWN] Initiating graceful shutdown...');
+  clearInterval(interval);
+  wss.close();
+  server.close();
+  process.exit(0);
+}
 
-// Graceful shutdown (SIGINT, SIGTERM)
-process.on('SIGINT', () => {
-  console.log('[WS] Closing server...');
-  wss.close();
-  process.exit();
-});
-process.on('SIGTERM', () => {
-  console.log('[WS] Closing server...');
-  wss.close();
-  process.exit();
-});
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 process.on('uncaughtException', (err) => {
-  console.error('[WS ERROR] Uncaught exception:', err);
+  console.error('[CRITICAL ERROR]', err);
+  shutdown();
 });
