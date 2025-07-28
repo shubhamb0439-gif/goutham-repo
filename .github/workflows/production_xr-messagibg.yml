@@ -11,41 +11,41 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name:  Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name:  Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20.19.4'
 
-      - name: Install root dependencies (e.g. npm-run-all)
+      - name:  Install root dependencies (e.g. npm-run-all)
         run: npm install
 
-      - name: Install frontend dependencies
+      - name:  Install frontend dependencies
         working-directory: frontend
         run: npm install --force
 
-      - name: Build frontend
+      - name:  Build frontend
         working-directory: frontend
         run: npm run build
 
-      - name: Copy built frontend to backend/public
+      - name:  Copy built frontend to backend/public
         run: |
           mkdir -p backend/public
           cp -r frontend/build/* backend/public/
         # For Angular, use:
         # cp -r frontend/dist/<your-project-name>/* backend/public/
 
-      - name: Install backend dependencies
+      - name:  Install backend dependencies
         working-directory: backend
         run: npm install --force
 
-      - name: Zip backend for deployment
+      - name:  Zip backend for deployment
         working-directory: backend
         run: zip -r ../release.zip .
 
-      - name: Upload artifact
+      - name:  Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: backend-release
@@ -56,18 +56,18 @@ jobs:
     needs: build-and-deploy
 
     steps:
-      - name: Download artifact
+      - name:  Download artifact
         uses: actions/download-artifact@v4
         with:
           name: backend-release
 
-      - name: Unzip artifact
+      - name:  Unzip artifact
         run: unzip release.zip
 
-      - name: Remove zip file
+      - name:  Remove zip file
         run: rm release.zip
 
-      - name: Deploy to Azure Web App
+      - name:  Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'xr-messagibg'
