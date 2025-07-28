@@ -1,5 +1,7 @@
 const WebSocket = require('ws');
-// Bind to ALL interfaces so any device on LAN/WAN can connect:
+const http = require('http'); // <-- NEW
+
+// WebSocket server on port 8080
 const wss = new WebSocket.Server({ host: '0.0.0.0', port: 8080, clientTracking: true });
 
 console.log('[WS] Server running on ws://0.0.0.0:8080');
@@ -240,4 +242,28 @@ process.on('SIGTERM', () => {
 });
 process.on('uncaughtException', (err) => {
   console.error('[WS ERROR] Uncaught exception:', err);
+});
+
+// ==== Health Check HTTP Server (NEW) ====
+const healthServer = http.createServer((req, res) => {
+  if (req.url === '/health' || req.url === '/') {
+    const activeClients = Array.from(clients).map(c => ({
+      deviceName: c.deviceName || 'Unknown',
+      xrId: c.xrId || null
+    }));
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'ok',
+      connectedClients: activeClients.length,
+      clients: activeClients
+    }));
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
+});
+
+healthServer.listen(8081, () => {
+  console.log('[HTTP] Health check server running on http://0.0.0.0:8081/health');
 });
