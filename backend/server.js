@@ -1,48 +1,31 @@
-// // XR Messaging WebRTC + Messaging Signaling Server
+ 
 
-// const express = require('express');
-// const path = require('path');
-// const WebSocket = require('ws');
 
-// const PORT = process.env.PORT || 8080;
 
-// // --- Express App for HTTP & Health Check ---
-// const app = express();
-// const FRONTEND_PATH = path.join(__dirname, '../frontend');
-// app.use(express.static(FRONTEND_PATH)); // Serves index.html, renderer.js, etc.
 
-// // --- HEALTH CHECK (CRITICAL FOR AZURE) ---
-// app.get('/health', (req, res) => {
-//   res.status(200).json({
-//     status: 'healthy',
-//     timestamp: new Date().toISOString(),
-//     websocketClients: wss?.clients?.size || 0
-//   });
-// });
-
-// // --- SPA fallback: redirect unknown routes to index.html ---
-// app.get('*', (req, res) => {
-//   res.sendFile(path.join(FRONTEND_PATH, 'index.html'));
-// });
-
-// // --- Create HTTP server and attach WebSocket ---
-// const server = app.listen(PORT, '0.0.0.0', () => {
-//   console.log(`[HTTP+WS] Server running on http://0.0.0.0:${PORT}`);
-// });
-
-const express = require('express');
+// =================== EXPRESS + NGROK URL ROUTE ===================
+const fs = require('fs');
 const path = require('path');
-const WebSocket = require('ws');
-const fs = require('fs'); // Make sure to require fs
-
-const PORT = process.env.PORT || 8080;
+const express = require('express');
 const app = express();
 
+// --- Serve ngrok signaling URL for frontend auto-detection ---
+app.get('/ngrok-url', (req, res) => {
+  // Default/fallback: change this to your prod ngrok URL!
+  let url = 'wss://b5435c8ada2d.ngrok-free.app';
+  try {
+    url = fs.readFileSync(path.join(__dirname, 'NGROK_URL.txt'), 'utf8').trim();
+  } catch (e) {}
+  res.json({ signalingUrl: url });
+});
+
+// --- (Optional) Serve static files, if using same backend for HTML/JS ---
+// app.use(express.static(path.join(__dirname, 'public')));
 // --- Static File Serving ---
 const staticPaths = [
   path.join(__dirname, 'public')      // Primary location (where deployment puts files    // Alternative location
 ];
-
+ 
 let staticPathFound = null;
 staticPaths.forEach(possiblePath => {
   if (fs.existsSync(possiblePath)) {
@@ -51,10 +34,11 @@ staticPaths.forEach(possiblePath => {
     staticPathFound = possiblePath;
   }
 });
-
+ 
 if (!staticPathFound) {
   console.error('ERROR: No static files directory found! Tried:', staticPaths);
 }
+
 
 // --- HEALTH CHECK ---
 app.get('/health', (req, res) => {
@@ -65,28 +49,27 @@ app.get('/health', (req, res) => {
   });
 });
 
-// --- SPA fallback ---
-app.get('*', (req, res) => {
-  if (staticPathFound) {
-    res.sendFile(path.join(staticPathFound, 'index.html'));
-  } else {
-    res.status(404).send('Static files not found');
-  }
+
+// Start HTTP server on 3000 (or any port)
+const httpServer = app.listen(8081, () => {
+  console.log('[HTTP] Express server running on http://0.0.0.0:8081');
 });
 
-// --- Rest of your WebSocket code remains unchanged ---
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[HTTP+WS] Server running on http://0.0.0.0:${PORT}`);
-});
+// =================== WEBSOCKET SERVER ============================
+const WebSocket = require('ws');
+// Bind to ALL interfaces so any device on LAN/WAN can connect:
+const wss = new WebSocket.Server({ host: '0.0.0.0', port: 8080, clientTracking: true });
 
-const wss = new WebSocket.Server({ server }); // attaches to HTTP server!
+console.log('[WS] Server running on ws://0.0.0.0:8080');
+
 const clients = new Set();
 const messageHistory = [];
 
-// --- Heartbeat ---
-const heartbeat = (ws) => { ws.isAlive = true; };
+// --- Utility for heartbeat (keepalive) ---
+const heartbeat = (ws) => {
+  ws.isAlive = true;
+};
 
-// --- WebSocket Connection Handler ---
 wss.on('connection', (ws) => {
   clients.add(ws);
   ws.isAlive = true;
@@ -161,7 +144,6 @@ wss.on('connection', (ws) => {
 
       // ==== WEBRTC SIGNALING (OFFER/ANSWER/ICE) ====
       case 'offer':
-      case 'webrtc-offer':
         console.log('[WEBRTC] Offer from', from || 'unknown', 'to', to);
         broadcastToTarget({
           type: 'offer',
@@ -172,7 +154,6 @@ wss.on('connection', (ws) => {
         break;
 
       case 'answer':
-      case 'webrtc-answer':
         console.log('[WEBRTC] Answer from', from || 'unknown', 'to', to);
         broadcastToTarget({
           type: 'answer',
@@ -183,6 +164,7 @@ wss.on('connection', (ws) => {
         break;
 
       case 'ice-candidate':
+        // NOTE: candidate should always include { candidate, sdpMid, sdpMLineIndex }
         console.log('[WEBRTC] ICE candidate from', from || 'unknown', 'to', to);
         broadcastToTarget({
           type: 'ice-candidate',
@@ -191,7 +173,6 @@ wss.on('connection', (ws) => {
           to
         }, ws);
         break;
-
       // =============================================
 
       case 'control-command':
@@ -227,18 +208,22 @@ wss.on('connection', (ws) => {
 });
 
 // ==== Broadcast helpers ====
+
 function broadcastAll(data) {
   const msg = JSON.stringify(data);
   clients.forEach(c => {
     if (c.readyState === WebSocket.OPEN) c.send(msg);
   });
 }
+
 function broadcastExcept(sender, data) {
   const msg = JSON.stringify(data);
   clients.forEach(c => {
     if (c !== sender && c.readyState === WebSocket.OPEN) c.send(msg);
   });
 }
+
+// Only sends to the desktop client(s)
 function broadcastToDesktop(data) {
   const msg = JSON.stringify(data);
   clients.forEach(c => {
@@ -250,14 +235,16 @@ function broadcastToDesktop(data) {
     }
   });
 }
+
+// Targeted broadcast by xrId or deviceName (used for offer, answer, ICE, etc)
 function broadcastToTarget(data, sender) {
   if (data.to) {
     let sent = false;
     clients.forEach(c => {
       if (
-        (c.xrId === data.to || c.deviceName === data.to)
-        && c.readyState === WebSocket.OPEN
-        && c !== sender
+        (c.xrId === data.to || c.deviceName === data.to) &&
+        c.readyState === WebSocket.OPEN &&
+        c !== sender
       ) {
         c.send(JSON.stringify(data));
         sent = true;
@@ -267,13 +254,15 @@ function broadcastToTarget(data, sender) {
       console.warn(`[WS] No client found for target xrId/deviceName: ${data.to}`);
     }
   } else {
+    // If 'to' not provided, send to everyone except sender (failsafe)
     broadcastExcept(sender, data);
   }
 }
+
 function broadcastDeviceList() {
   const deviceList = Array.from(clients)
     .filter(c => c.deviceName)
-    .map(c => ({ name: c.deviceName, xrId: c.xrId }));
+    .map(c => ({ deviceName: c.deviceName, xrId: c.xrId }));
 
   const msg = JSON.stringify({ type: 'device_list', devices: deviceList });
 
@@ -282,7 +271,7 @@ function broadcastDeviceList() {
   });
 }
 
-// --- Heartbeat ping every 30s ---
+// Heartbeat ping every 30s to keep connections alive (avoid idle timeout)
 const interval = setInterval(() => {
   wss.clients.forEach(ws => {
     if (ws.isAlive === false) {
@@ -294,18 +283,21 @@ const interval = setInterval(() => {
   });
 }, 30000);
 
-// --- Graceful shutdown ---
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+wss.on('close', () => clearInterval(interval));
 
-function shutdown() {
-  console.log('Shutting down server...');
-  clearInterval(interval);
+// Graceful shutdown (SIGINT, SIGTERM)
+process.on('SIGINT', () => {
+  console.log('[WS] Closing server...');
   wss.close();
-  server.close();
-  process.exit(0);
-}
-
+  httpServer.close();
+  process.exit();
+});
+process.on('SIGTERM', () => {
+  console.log('[WS] Closing server...');
+  wss.close();
+  httpServer.close();
+  process.exit();
+});
 process.on('uncaughtException', (err) => {
   console.error('[WS ERROR] Uncaught exception:', err);
 });
