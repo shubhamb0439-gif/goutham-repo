@@ -1,17 +1,30 @@
-// // XR Messaging WebRTC + Messaging Signaling Server
- 
 // const express = require('express');
 // const path = require('path');
 // const WebSocket = require('ws');
+// const fs = require('fs'); // Make sure to require fs
  
 // const PORT = process.env.PORT || 8080;
- 
-// // --- Express App for HTTP & Health Check ---
 // const app = express();
-// const FRONTEND_PATH = path.join(__dirname, '../frontend');
-// app.use(express.static(FRONTEND_PATH)); // Serves index.html, renderer.js, etc.
  
-// // --- HEALTH CHECK (CRITICAL FOR AZURE) ---
+// // --- Static File Serving ---
+// const staticPaths = [
+//   path.join(__dirname, 'public')       // Primary location (where deployment puts files)
+// ];
+ 
+// let staticPathFound = null;
+// staticPaths.forEach(possiblePath => {
+//   if (fs.existsSync(possiblePath)) {
+//     app.use(express.static(possiblePath));
+//     console.log(`Serving static files from ${possiblePath}`);
+//     staticPathFound = possiblePath;
+//   }
+// });
+ 
+// if (!staticPathFound) {
+//   console.error('ERROR: No static files directory found! Tried:', staticPaths);
+// }
+ 
+// // --- HEALTH CHECK ---
 // app.get('/health', (req, res) => {
 //   res.status(200).json({
 //     status: 'healthy',
@@ -20,27 +33,28 @@
 //   });
 // });
  
-// // --- SPA fallback: redirect unknown routes to index.html ---
+// // --- SPA fallback ---
 // app.get('*', (req, res) => {
-//   res.sendFile(path.join(FRONTEND_PATH, 'index.html'));
-// });
- 
-// // --- Create HTTP server and attach WebSocket ---
-// const server = app.listen(PORT, '0.0.0.0', () => {
-//   console.log(`[HTTP+WS] Server running on http://0.0.0.0:${PORT}`);
+//   if (staticPathFound) {
+//     res.sendFile(path.join(staticPathFound, 'index.html'));
+//   } else {
+//     res.status(404).send('Static files not found');
+//   }
 // });
  
 const express = require('express');
 const path = require('path');
 const WebSocket = require('ws');
-const fs = require('fs'); // Make sure to require fs
+const fs = require('fs');
+require('dotenv').config();  // 1. Always at the top
  
 const PORT = process.env.PORT || 8080;
 const app = express();
  
 // --- Static File Serving ---
 const staticPaths = [
-  path.join(__dirname, 'public')       // Primary location (where deployment puts files)
+  path.join(__dirname, 'public'),         // For deployed builds
+  path.join(__dirname, '../frontend')     // For development (your current structure)
 ];
  
 let staticPathFound = null;
@@ -48,12 +62,25 @@ staticPaths.forEach(possiblePath => {
   if (fs.existsSync(possiblePath)) {
     app.use(express.static(possiblePath));
     console.log(`Serving static files from ${possiblePath}`);
-    staticPathFound = possiblePath;
+    if (!staticPathFound) staticPathFound = possiblePath;
   }
 });
- 
 if (!staticPathFound) {
   console.error('ERROR: No static files directory found! Tried:', staticPaths);
+}
+ 
+// --- Helper: Inject TURN config into HTML as a <script> tag ---
+function injectTurnConfig(html) {
+  const turnConfigScript = `
+    <script>
+      window.TURN_CONFIG = {
+        urls: '${process.env.TURN_URL}',
+        username: '${process.env.TURN_USERNAME}',
+        credential: '${process.env.TURN_CREDENTIAL}'
+      };
+    </script>
+  `;
+  return html.replace('</body>', `${turnConfigScript}\n</body>`);
 }
  
 // --- HEALTH CHECK ---
@@ -65,15 +92,23 @@ app.get('/health', (req, res) => {
   });
 });
  
-// --- SPA fallback ---
+// --- Serve index.html with TURN config injected on '/' route ---
+app.get('/', (req, res) => {
+  if (!staticPathFound) return res.status(404).send('Static files not found');
+  let html = fs.readFileSync(path.join(staticPathFound, 'index.html'), 'utf8');
+  res.send(injectTurnConfig(html));
+});
+ 
+// --- SPA fallback: inject TURN config for any unknown route ---
 app.get('*', (req, res) => {
   if (staticPathFound) {
-    res.sendFile(path.join(staticPathFound, 'index.html'));
+    let html = fs.readFileSync(path.join(staticPathFound, 'index.html'), 'utf8');
+    res.send(injectTurnConfig(html));
   } else {
     res.status(404).send('Static files not found');
   }
 });
- 
+
 // --- Rest of your WebSocket code remains unchanged ---
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`[HTTP+WS] Server running on http://0.0.0.0:${PORT}`);

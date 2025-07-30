@@ -108,50 +108,64 @@ function handleSocketMessage(data) {
 // ========== WebRTC Setup ==========
 function createPeerConnection() {
   stopStream();
+ 
+  // Use TURN config injected at runtime by backend
+  const turnConfig = window.TURN_CONFIG || {};
+ 
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' }
+  ];
+ 
+  // Only push TURN config if present
+  if (turnConfig.urls && turnConfig.username && turnConfig.credential) {
+    iceServers.push({
+      urls: turnConfig.urls,
+      username: turnConfig.username,
+      credential: turnConfig.credential
+    });
+  }
+ 
   const pc = new RTCPeerConnection({
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun3.l.google.com:19302' },
-      { urls: 'stun:stun4.l.google.com:19302' }
-    ]
+    iceServers: iceServers,
+    iceTransportPolicy: 'all'
   });
-
+ 
   pc.ontrack = (event) => {
     console.log('[WebRTC] ontrack event:', event.track.kind, event);
     if (!remoteStream) {
       remoteStream = new MediaStream();
       videoElement.srcObject = remoteStream;
-      // Default: start muted for autoplay policy
-      videoElement.muted = true;
+      videoElement.muted = true; // Autoplay policy
     }
-    // Only add track if not already present
     if (!remoteStream.getTracks().some(t => t.id === event.track.id)) {
       remoteStream.addTrack(event.track);
     }
-
     videoElement.play().catch(e => {
       console.warn('video play error', e);
       showClickToPlayOverlay();
     });
   };
-
+ 
   pc.onicecandidate = (event) => {
     if (event.candidate) {
       ws && ws.send(JSON.stringify({
         type: 'ice-candidate',
-        to: "XR-1234",   // Android device ID
-        from: xrIdInput.value || "XR-1238",
+        to: "XR-1234",   // Android device ID (must match SignalingClient in app)
+        from: xrIdInput.value?.trim() || "XR-1238",
         candidate: event.candidate
       }));
     }
   };
-
+ 
   pc.oniceconnectionstatechange = () => {
     console.log('[WebRTC] ICE state:', pc.iceConnectionState);
     if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') stopStream();
   };
+ 
   pc.onconnectionstatechange = () => {
     console.log('[WebRTC] connection state:', pc.connectionState);
     if (pc.connectionState === 'connected') setStatus('Connected');
@@ -160,7 +174,7 @@ function createPeerConnection() {
       setStatus('Connecting');
     }
   };
-
+ 
   isStreamActive = true;
   return pc;
 }
