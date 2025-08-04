@@ -254,9 +254,9 @@ wss.on('connection', (ws) => {
     }
   });
  
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
     clients.delete(ws);
-    console.log(`[DISCONNECTED] ${ws.deviceName || 'Unknown'} (${ws.xrId || 'no-id'})`);
+    console.log(`[DISCONNECTED] ${ws.deviceName || 'Unknown'} (${ws.xrId || 'no-id'}) | Code: ${code}, Reason: ${reason.toString()}`);
     broadcastDeviceList();
   });
 });
