@@ -1054,9 +1054,3 @@ window.addEventListener('load', () => {
   console.log('[APP] Window loaded. Connecting WebSocket...');
   connectWebSocket();
 });
-
-
-// window.addEventListener('load', () => {
-//   console.log('[APP] Window loaded. Connecting WebSocket...');
-//   connectWebSocket();
-// });
