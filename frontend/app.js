@@ -592,32 +592,61 @@ function connectWebSocket() {
     try { ws.close(); } catch {}
   };
 
-  ws.onmessage = (event) => {
-    console.log('[WS] 📩 Message received:', event.data);
-    let data;
-    try {
-      data = JSON.parse(event.data);
-    } catch {
-      console.warn('[WS] ⚠️ Failed to parse message as JSON:', event.data);
-      data = {};
-    }
+//   ws.onmessage = (event) => {
+//     console.log('[WS] 📩 Message received:', event.data);
+//     let data;
+//     try {
+//       data = JSON.parse(event.data);
+//     } catch {
+//       console.warn('[WS] ⚠️ Failed to parse message as JSON:', event.data);
+//       data = {};
+//     }
 
-    // === 🔴 Block duplicate desktop tabs ===
-    if (data.type === 'error' && data.message?.includes('Duplicate desktop')) {
-      console.warn('[WS] 🚫 Duplicate desktop tab detected. Blocking UI...');
-      alert('This desktop session is inactive. Please close other tabs.');
-      document.body.innerHTML = `
-        <div style="display: flex; flex-direction: column; align-items: center; margin-top: 20%;">
-          <h1 style="color: red; text-align: center;">Another tab is already connected.</h1>
-          <p style="margin-top: 1rem;">Only one desktop tab can be active at a time.</p>
-        </div>`;
-      try { ws.close(); } catch {}
-      return;
-    }
+//     // === 🔴 Block duplicate desktop tabs ===
+//     // if (data.type === 'error' && data.message?.includes('Duplicate desktop')) {
+//       if (data.type === 'duplicate_tab') {
+//       console.warn('[WS] 🚫 Duplicate desktop tab detected. Blocking UI...');
+//       alert('This desktop session is inactive. Please close other tabs.');
+//       document.body.innerHTML = `
+//         <div style="display: flex; flex-direction: column; align-items: center; margin-top: 20%;">
+//           <h1 style="color: red; text-align: center;">Another tab is already connected.</h1>
+//           <p style="margin-top: 1rem;">Only one desktop tab can be active at a time.</p>
+//         </div>`;
+//       try { ws.close(); } catch {}
+//       return;
+//     }
 
-    handleSocketMessage(data);
-  };
-}
+//     handleSocketMessage(data);
+//   };
+// }
+//----------------------------------***refresh***---------------------------------------
+
+ws.onmessage = (event) => {
+  console.log('[WS] 📩 Message received:', event.data);
+  let data;
+  try {
+    data = JSON.parse(event.data);
+  } catch {
+    console.warn('[WS] ⚠️ Failed to parse message as JSON:', event.data);
+    data = {};
+  }
+
+  // === 🔴 Block duplicate desktop tabs ===
+  if (data.type === 'duplicate_tab') {
+    console.warn('[WS] 🚫 Duplicate desktop tab detected. Blocking UI...');
+    alert(data.message || 'This desktop session is inactive. Please close other tabs.');
+    document.body.innerHTML = `
+      <div style="display: flex; flex-direction: column; align-items: center; margin-top: 20%;">
+        <h1 style="color: red; text-align: center;">Another tab is already connected.</h1>
+        <p style="margin-top: 1rem;">Only one desktop tab can be active at a time.</p>
+      </div>`;
+    try { ws.close(); } catch {}
+    return;
+  }
+
+  handleSocketMessage(data);
+};
+// --------------------------------****refresh***-----------------------------------------
 
 function startHeartbeat() {
   if (heartbeatInterval) clearInterval(heartbeatInterval);
@@ -1050,7 +1079,30 @@ if (videoOverlay) {
   });
 }
 
+// window.addEventListener('load', () => {
+//   console.log('[APP] Window loaded. Connecting WebSocket...');
+//   connectWebSocket();
+// });
+// -----------------------------****refresh***--------------------
+
 window.addEventListener('load', () => {
-  console.log('[APP] Window loaded. Connecting WebSocket...');
-  connectWebSocket();
+  if (sessionStorage.getItem("xr-tab-open")) {
+    console.warn("[TAB] ❌ Another desktop tab is already active.");
+    alert("Another desktop session is already active in a different tab.");
+    document.body.innerHTML = `
+      <div style="margin-top: 20%; text-align: center; color: red;">
+        <h2>This session is inactive.</h2>
+        <p>Please close other desktop tabs first.</p>
+      </div>`;
+  } else {
+    console.log("[TAB] ✅ First desktop tab opening. Proceeding with connection...");
+    sessionStorage.setItem("xr-tab-open", "true");
+
+    // When the tab is closed or refreshed, clear the flag
+    window.addEventListener("beforeunload", () => {
+      sessionStorage.removeItem("xr-tab-open");
+    });
+
+    connectWebSocket();
+  }
 });
