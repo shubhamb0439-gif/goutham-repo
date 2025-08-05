@@ -3,15 +3,15 @@ const path = require('path');
 const WebSocket = require('ws');
 const fs = require('fs');
 require('dotenv').config();
- 
+
 const PORT = process.env.PORT || 8080;
 const app = express();
- 
+
 const staticPaths = [
   path.join(__dirname, 'public'),
   path.join(__dirname, '../frontend')
 ];
- 
+
 let staticPathFound = null;
 staticPaths.forEach(possiblePath => {
   if (fs.existsSync(possiblePath)) {
@@ -23,7 +23,7 @@ staticPaths.forEach(possiblePath => {
 if (!staticPathFound) {
   console.error('ERROR: No static files directory found! Tried:', staticPaths);
 }
- 
+
 function injectTurnConfig(html) {
   const turnConfigScript = `
     <script>
@@ -36,7 +36,7 @@ function injectTurnConfig(html) {
   `;
   return html.replace('</body>', `${turnConfigScript}\n</body>`);
 }
- 
+
 app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'healthy',
@@ -44,13 +44,13 @@ app.get('/health', (req, res) => {
     websocketClients: wss?.clients?.size || 0
   });
 });
- 
+
 app.get('/', (req, res) => {
   if (!staticPathFound) return res.status(404).send('Static files not found');
   let html = fs.readFileSync(path.join(staticPathFound, 'index.html'), 'utf8');
   res.send(injectTurnConfig(html));
 });
- 
+
 app.get('*', (req, res) => {
   if (staticPathFound) {
     let html = fs.readFileSync(path.join(staticPathFound, 'index.html'), 'utf8');
@@ -59,27 +59,27 @@ app.get('*', (req, res) => {
     res.status(404).send('Static files not found');
   }
 });
- 
+
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`[HTTP+WS] Server running on http://0.0.0.0:${PORT}`);
 });
- 
+
 const wss = new WebSocket.Server({ server });
 const clients = new Set();
 const messageHistory = [];
- 
+
 const heartbeat = (ws) => { ws.isAlive = true; };
- 
+
 wss.on('connection', (ws) => {
   clients.add(ws);
   ws.isAlive = true;
- 
+
   console.log('\n[WS] New client connected (pending identification)...');
   logCurrentDevices();
- 
+
   ws.on('pong', () => heartbeat(ws));
   ws.on('error', (error) => console.error('[WS ERROR]', error));
- 
+
   // Send recent message history to new client
   if (messageHistory.length > 0) {
     ws.send(JSON.stringify({
@@ -87,10 +87,10 @@ wss.on('connection', (ws) => {
       messages: messageHistory.slice(-10),
     }));
   }
- 
+
   ws.on('message', (message) => {
     console.log('[WS] Received:', message.toString());
- 
+
     let data;
     try {
       data = JSON.parse(message);
@@ -98,14 +98,14 @@ wss.on('connection', (ws) => {
       console.warn('[WS WARNING] Invalid JSON:', message.toString());
       return;
     }
- 
+
     if (!data || typeof data !== 'object' || !data.type) {
       console.warn('[WS WARNING] Malformed message object:', data);
       return;
     }
- 
+
     const { type, from, to, deviceName } = data;
- 
+
     switch (type) {
       case 'identification':
         ws.deviceName = deviceName || 'Unknown';
@@ -114,7 +114,16 @@ wss.on('connection', (ws) => {
         broadcastDeviceList();
         logCurrentDevices();
         break;
- 
+
+      case 'request_device_list':
+        ws.send(JSON.stringify({
+          type: 'device_list',
+          devices: Array.from(clients)
+            .filter(c => c.deviceName)
+            .map(c => ({ name: c.deviceName, xrId: c.xrId }))
+        }));
+        break;
+
       case 'message':
         const fullMessage = {
           ...data,
@@ -125,16 +134,16 @@ wss.on('connection', (ws) => {
         if (messageHistory.length > 100) messageHistory.shift();
         broadcastExcept(ws, fullMessage);
         break;
- 
+
       case 'clear-messages':
         console.log(`[MESSAGE] Clear requested by ${data.by}`);
         broadcastAll({
-          type: 'message-cleared',
+          type: 'clear-messages',
           by: data.by,
           messageId: Date.now()
         });
         break;
- 
+
       case 'clear_confirmation':
         broadcastToDesktop({
           type: 'message_cleared',
@@ -142,7 +151,7 @@ wss.on('connection', (ws) => {
           timestamp: new Date().toISOString()
         });
         break;
- 
+
       // ==== WEBRTC SIGNALING ====
       case 'offer':
       case 'webrtc-offer':
@@ -154,7 +163,7 @@ wss.on('connection', (ws) => {
           to
         }, ws);
         break;
- 
+
       case 'answer':
       case 'webrtc-answer':
         console.log(`[WEBRTC] Answer from ${from || 'unknown'} to ${to}`);
@@ -165,7 +174,7 @@ wss.on('connection', (ws) => {
           to
         }, ws);
         break;
- 
+
       case 'ice-candidate':
         console.log(`[WEBRTC] ICE candidate from ${from || 'unknown'} to ${to}`);
         broadcastToTarget({
@@ -175,7 +184,7 @@ wss.on('connection', (ws) => {
           to
         }, ws);
         break;
- 
+
       // ===========================
       case 'control-command':
       case 'control_command':
@@ -186,7 +195,7 @@ wss.on('connection', (ws) => {
           from
         });
         break;
- 
+
       case 'status_report':
         console.log(`[STATUS] Report from ${from}:`, data.status);
         broadcastToDesktop({
@@ -196,12 +205,12 @@ wss.on('connection', (ws) => {
           timestamp: new Date().toISOString()
         });
         break;
- 
+
       default:
         console.warn(`[WS WARNING] Unknown type received: ${type}`);
     }
   });
- 
+
   ws.on('close', () => {
     clients.delete(ws);
     console.log(`[DISCONNECTED] ${ws.deviceName || 'Unknown'} (${ws.xrId || 'no-id'})`);
@@ -209,7 +218,7 @@ wss.on('connection', (ws) => {
     logCurrentDevices();
   });
 });
- 
+
 // ==== Broadcast helpers ====
 function broadcastAll(data) {
   const msg = JSON.stringify(data);
@@ -217,14 +226,14 @@ function broadcastAll(data) {
     if (c.readyState === WebSocket.OPEN) c.send(msg);
   });
 }
- 
+
 function broadcastExcept(sender, data) {
   const msg = JSON.stringify(data);
   clients.forEach(c => {
     if (c !== sender && c.readyState === WebSocket.OPEN) c.send(msg);
   });
 }
- 
+
 function broadcastToDesktop(data) {
   const msg = JSON.stringify(data);
   clients.forEach(c => {
@@ -236,7 +245,7 @@ function broadcastToDesktop(data) {
     }
   });
 }
- 
+
 function broadcastToTarget(data, sender) {
   if (data.to) {
     let sent = false;
@@ -257,19 +266,19 @@ function broadcastToTarget(data, sender) {
     broadcastExcept(sender, data);
   }
 }
- 
+
 function broadcastDeviceList() {
   const deviceList = Array.from(clients)
     .filter(c => c.deviceName)
     .map(c => ({ name: c.deviceName, xrId: c.xrId }));
- 
+
   const msg = JSON.stringify({ type: 'device_list', devices: deviceList });
- 
+
   clients.forEach(c => {
     if (c.readyState === WebSocket.OPEN) c.send(msg);
   });
 }
- 
+
 // ---- Extra: Log all connected clients with XR IDs and Names ----
 function logCurrentDevices() {
   const deviceList = Array.from(clients)
@@ -280,7 +289,7 @@ function logCurrentDevices() {
     ? console.log('   (none)')
     : deviceList.forEach(d => console.log(`   - ${d}`));
 }
- 
+
 // --- Heartbeat ping every 30s ---
 const interval = setInterval(() => {
   wss.clients.forEach(ws => {
@@ -292,11 +301,11 @@ const interval = setInterval(() => {
     ws.ping();
   });
 }, 30000);
- 
+
 // --- Graceful shutdown ---
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
- 
+
 function shutdown() {
   console.log('[SERVER] Graceful shutdown initiated...');
   clearInterval(interval);
@@ -306,7 +315,7 @@ function shutdown() {
     process.exit(0);
   });
 }
- 
+
 process.on('uncaughtException', (err) => {
   console.error('[FATAL ERROR] Uncaught exception occurred:', err);
 });
