@@ -96,6 +96,13 @@ const desktopClients = new Map();  // xrId → socket
 const messageHistory = [];
 console.log('[SOCKET.IO] Data structures initialized');
 
+function buildDeviceList() {
+  return [...clients.entries()].map(([xrId, s]) => ({
+    xrId,
+    deviceName: s?.data?.deviceName || 'Unknown'
+  }));
+}
+
 function broadcastDeviceList() {
   console.log('[DEVICE_LIST] Broadcasting device list');
   const deviceList = Array.from(clients.entries()).map(([xrId, socket]) => ({
