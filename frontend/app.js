@@ -377,6 +377,23 @@ function showClickToPlayOverlay() {
   };
 }
 
+// function updateDeviceList(devices) {
+//   if (!Array.isArray(devices)) {
+//     console.error("Device list is not an array:", devices);
+//     return;
+//   }
+
+//   console.log('[DEVICES] Updating device list with', devices.length, 'devices');
+//   deviceListElement.innerHTML = '';
+//   devices.forEach(device => {
+//     // server emits { deviceName, xrId }
+//     const name = device.deviceName || device.name || 'Unknown';
+//     console.log(`[DEVICE] Adding device: ${name} (${device.xrId})`);
+//     const li = document.createElement('li');
+//     li.textContent = `${name} (${device.xrId})`;
+//     deviceListElement.appendChild(li);
+//   });
+// }
 function updateDeviceList(devices) {
   if (!Array.isArray(devices)) {
     console.error("Device list is not an array:", devices);
@@ -386,7 +403,6 @@ function updateDeviceList(devices) {
   console.log('[DEVICES] Updating device list with', devices.length, 'devices');
   deviceListElement.innerHTML = '';
   devices.forEach(device => {
-    // server emits { deviceName, xrId }
     const name = device.deviceName || device.name || 'Unknown';
     console.log(`[DEVICE] Adding device: ${name} (${device.xrId})`);
     const li = document.createElement('li');
@@ -394,6 +410,7 @@ function updateDeviceList(devices) {
     deviceListElement.appendChild(li);
   });
 }
+
 
 function sendMessage() {
   const text = messageInput.value.trim();
