@@ -1,3 +1,4 @@
+// app.js (updated)
 // === DOM Elements ===
 console.log('[INIT] Initializing DOM elements');
 const videoElement = document.getElementById('xrVideo');
@@ -28,42 +29,60 @@ let pendingIceCandidates = [];
 let isStreamActive = false;
 let reconnectTimeout = null;
 let heartbeatInterval = null;
+let currentRoom = null; // <-- track the room we're joined to (if any)
 
 // CONFIG
 console.log('[CONFIG] Loading configuration');
 const SERVER_URL = 'https://xr-messaging-geexbheshbghhab7.centralindia-01.azurewebsites.net';
 const XR_ID = xrIdInput.value?.trim() || "XR-1238";
 const DEVICE_NAME = usernameInput.value?.trim() || "Desktop";
-const ANDROID_ID = "XR-1234"; // direct messages/control target
+const ANDROID_ID = "XR-1234"; // direct messages/control target (for now)
 console.log('[CONFIG] Server URL:', SERVER_URL);
 console.log('[CONFIG] XR ID:', XR_ID);
 console.log('[CONFIG] Device Name:', DEVICE_NAME);
 
+// --------------------------
+// UTILS
+// --------------------------
+function logFnEntry(fnName, extra = '') {
+  console.log(`[ENTER] ${fnName} ${extra}`);
+}
+
+// --------------------------
+// UI / Status
+// --------------------------
 function setStatus(status) {
-  console.log('[STATUS] Updating status to:', status);
-  statusElement.textContent = status;
-  statusElement.classList.remove('bg-yellow-500', 'bg-green-500', 'bg-red-600');
-  switch (status.toLowerCase()) {
-    case 'connected':
-      console.log('[STATUS] Setting connected state');
-      statusElement.classList.add('bg-green-500');
-      break;
-    case 'connecting':
-      console.log('[STATUS] Setting connecting state');
-      statusElement.classList.add('bg-yellow-500');
-      break;
-    case 'disconnected':
-      console.log('[STATUS] Setting disconnected state');
-      statusElement.classList.add('bg-red-600');
-      break;
-    default:
-      console.log('[STATUS] Setting default (connecting) state');
-      statusElement.classList.add('bg-yellow-500');
+  logFnEntry('setStatus', status);
+  try {
+    statusElement.textContent = status;
+    statusElement.classList.remove('bg-yellow-500', 'bg-green-500', 'bg-red-600');
+    switch (status.toLowerCase()) {
+      case 'connected':
+        console.log('[STATUS] Setting connected state');
+        statusElement.classList.add('bg-green-500');
+        break;
+      case 'connecting':
+        console.log('[STATUS] Setting connecting state');
+        statusElement.classList.add('bg-yellow-500');
+        break;
+      case 'disconnected':
+        console.log('[STATUS] Setting disconnected state');
+        statusElement.classList.add('bg-red-600');
+        break;
+      default:
+        console.log('[STATUS] Setting default (connecting) state');
+        statusElement.classList.add('bg-yellow-500');
+    }
+  } catch (e) {
+    console.warn('[STATUS] setStatus error', e);
   }
 }
 
+// --------------------------
+// Socket.IO connection & handlers
+// --------------------------
 function connectSocketIO() {
-  console.log('[SOCKET] Connecting to Socket.IO server:', SERVER_URL);
+  logFnEntry('connectSocketIO');
   setStatus('Connecting');
 
   socket = io(SERVER_URL, {
@@ -77,32 +96,20 @@ function connectSocketIO() {
     autoConnect: true
   });
 
+  // connection established
+  socket.on('connect', () => {
+    logFnEntry('socket.on(connect)');
+    setStatus('Connected');
+    console.log('[SOCKET] Emitting identify with:', { deviceName: DEVICE_NAME, xrId: XR_ID });
+    socket.emit('identify', { deviceName: DEVICE_NAME, xrId: XR_ID });
 
-  
+    // ask the server to immediately send the current list
+    socket.emit('request_device_list');
 
-  // socket.on('connect', () => {
-  //   console.log('[SOCKET] ✅ Successfully connected to server');
-  //   setStatus('Connected');
-  //   console.log('[SOCKET] Emitting identify with:', { deviceName: DEVICE_NAME, xrId: XR_ID });
-  //   socket.emit('identify', {
-  //     deviceName: DEVICE_NAME,
-  //     xrId: XR_ID
-  // //   });
+    // try to pair with the known peer (your one-to-one room)
+    // This will trigger server-side validation (allowedPairs or DB)
+    pairWith(ANDROID_ID);
 
-  //  // ask the server to immediately send the current list
-  // socket.emit('request_device_list');
-
-socket.on('connect', () => {
-  console.log('[SOCKET] ✅ Successfully connected to server');
-  setStatus('Connected');
-  console.log('[SOCKET] Emitting identify with:', { deviceName: DEVICE_NAME, xrId: XR_ID });
-  socket.emit('identify', {
-    deviceName: DEVICE_NAME,
-    xrId: XR_ID
-  });
-   // ask the server to immediately send the current list
-  socket.emit('request_device_list');
-  
     if (reconnectTimeout) {
       console.log('[SOCKET] Clearing reconnect timeout');
       clearTimeout(reconnectTimeout);
@@ -112,8 +119,16 @@ socket.on('connect', () => {
   });
 
   socket.on('disconnect', (reason) => {
+    logFnEntry('socket.on(disconnect)', reason);
     console.warn('[SOCKET] ❌ Disconnected from server. Reason:', reason);
     setStatus('Disconnected');
+
+    // mark room left locally
+    if (currentRoom) {
+      console.log('[SOCKET] Marking currentRoom as null due to disconnect', currentRoom);
+      currentRoom = null;
+    }
+
     if (reason === 'io server disconnect') {
       console.log('[SOCKET] Server forced disconnect - attempting reconnect');
       setTimeout(() => {
@@ -124,12 +139,15 @@ socket.on('connect', () => {
   });
 
   socket.on('connect_error', (err) => {
-    console.error('[SOCKET] 🛑 Connection error:', err.message);
+    logFnEntry('socket.on(connect_error)');
+    console.error('[SOCKET] 🛑 Connection error:', err?.message || err);
     setStatus('Disconnected');
   });
 
   socket.on('error', (data) => {
-    if (data.message?.includes('Duplicate desktop')) {
+    logFnEntry('socket.on(error)');
+    console.log('[SOCKET] error payload:', data);
+    if (data?.message?.includes('Duplicate desktop')) {
       console.warn('[SOCKET] 🚫 Duplicate desktop tab detected');
       alert('This desktop session is inactive. Please close other tabs.');
       document.body.innerHTML = `
@@ -141,16 +159,43 @@ socket.on('connect', () => {
     }
   });
 
+  // custom events
   socket.on('signal', handleSignalMessage);
   socket.on('message', handleChatMessage);
   socket.on('device_list', updateDeviceList);
   socket.on('control', handleControlCommand);
   socket.on('message-cleared', handleMessagesCleared);
   socket.on('message_history', handleMessageHistory);
+
+  // room / pairing events
+  socket.on('pair_error', ({ message }) => {
+    logFnEntry('socket.on(pair_error)');
+    console.warn('[PAIR] pair_error:', message);
+    addSystemMessage(`Pair error: ${message}`);
+  });
+
+  socket.on('room_joined', ({ roomId, members }) => {
+    logFnEntry('socket.on(room_joined)');
+    console.log('[PAIR] joined room:', roomId, members);
+    currentRoom = roomId;
+    addSystemMessage(`Joined room ${roomId} with: ${members.join(', ')}`);
+  });
+
+  socket.on('peer_left', ({ xrId, roomId }) => {
+    logFnEntry('socket.on(peer_left)');
+    console.log('[PAIR] peer_left', xrId, roomId);
+    if (currentRoom === roomId) {
+      addSystemMessage(`${xrId} left the room.`);
+      // keep currentRoom null so we don't try to send signals to a room with one member
+      currentRoom = null;
+      stopStream();
+    }
+  });
 }
 
+// heartbeat to keep connection alive in some environments
 function startHeartbeat() {
-  console.log('[HEARTBEAT] Starting heartbeat interval');
+  logFnEntry('startHeartbeat');
   if (heartbeatInterval) {
     console.log('[HEARTBEAT] Clearing existing heartbeat interval');
     clearInterval(heartbeatInterval);
@@ -165,24 +210,55 @@ function startHeartbeat() {
   }, 25000);
 }
 
+// --------------------------
+// Pairing / Room management (client-side)
+// --------------------------
+function pairWith(peerId) {
+  logFnEntry('pairWith', peerId);
+  if (!socket || !socket.connected) {
+    console.warn('[PAIR] socket not connected, delaying pairWith call');
+    // try again shortly
+    setTimeout(() => pairWith(peerId), 500);
+    return;
+  }
+  if (!peerId) {
+    console.warn('[PAIR] Missing peerId');
+    return;
+  }
+  console.log('[PAIR] Emitting pair_with for peer:', peerId);
+  socket.emit('pair_with', { peerId });
+}
+
+// --------------------------
+// Signal handlers (client)
+// --------------------------
 function handleSignalMessage(data) {
-  console.log('[SIGNAL] Received signal message:', data.type);
+  logFnEntry('handleSignalMessage', data?.type || '');
+  console.log('[SIGNAL] Received signal message:', data);
   switch (data.type) {
     case 'offer':
       console.log('[WEBRTC] 📞 Received offer from peer');
-      // Server relays payload as { type, from, data }, pass the SDP object only
+      // server relays payload as { type, from, data }, pass the SDP object only
       handleOffer(data.data);
       break;
     case 'ice-candidate':
       console.log('[WEBRTC] ❄️ Received ICE candidate from peer');
       handleRemoteIceCandidate(data.data);
       break;
+    case 'answer':
+      console.log('[WEBRTC] ✅ Received answer from peer');
+      handleAnswer(data.data);
+      break;
     default:
       console.log('[WEBRTC] Unhandled signal type:', data.type);
   }
 }
 
+// --------------------------
+// Chat / Messages
+// --------------------------
 function handleChatMessage(msg) {
+  logFnEntry('handleChatMessage');
   console.log('[CHAT] Received chat message:', msg);
   const normalized = normalizeMessage(msg);
   console.log('[CHAT] Normalized message:', normalized);
@@ -191,6 +267,7 @@ function handleChatMessage(msg) {
 }
 
 function handleMessagesCleared(data) {
+  logFnEntry('handleMessagesCleared');
   if (!clearedMessages.has(data.messageId)) {
     console.log('[CHAT] Messages cleared by', data.by, 'messageId:', data.messageId);
     clearedMessages.add(data.messageId);
@@ -202,6 +279,7 @@ function handleMessagesCleared(data) {
 }
 
 function handleMessageHistory(data) {
+  logFnEntry('handleMessageHistory');
   console.log('[CHAT] Received message history with', data.messages.length, 'messages');
   data.messages.forEach(msg => {
     const normalized = normalizeMessage(msg);
@@ -209,7 +287,11 @@ function handleMessageHistory(data) {
   });
 }
 
+// --------------------------
+// WebRTC: PeerConnection creation + handlers
+// --------------------------
 function createPeerConnection() {
+  logFnEntry('createPeerConnection');
   console.log('[WEBRTC] Creating new peer connection');
   stopStream();
   const turnConfig = window.TURN_CONFIG || {};
@@ -232,6 +314,7 @@ function createPeerConnection() {
   console.log('[WEBRTC] Peer connection created with ICE servers:', iceServers);
 
   pc.ontrack = (event) => {
+    logFnEntry('pc.ontrack');
     console.log('[WEBRTC] Received track:', event.track.kind);
     if (!remoteStream) {
       console.log('[WEBRTC] Creating new remote stream');
@@ -250,20 +333,28 @@ function createPeerConnection() {
   };
 
   pc.onicecandidate = (event) => {
+    logFnEntry('pc.onicecandidate');
     if (event.candidate) {
       console.log('[WEBRTC] Generated ICE candidate:', event.candidate);
-      socket?.emit('signal', {
+      // prefer room forwarding (omit 'to' when joined)
+      const payload = {
         type: 'ice-candidate',
-        to: ANDROID_ID,
         from: XR_ID,
         data: event.candidate
-      });
+      };
+      if (!currentRoom) {
+        // if no room we fall back to direct-to-id behavior for compatibility
+        payload.to = ANDROID_ID;
+      }
+      console.log('[WEBRTC] Emitting signal (ice-candidate) payload:', payload);
+      socket?.emit('signal', payload);
     } else {
       console.log('[WEBRTC] ICE gathering complete');
     }
   };
 
   pc.oniceconnectionstatechange = () => {
+    logFnEntry('pc.oniceconnectionstatechange');
     console.log('[WEBRTC] ICE connection state changed:', pc.iceConnectionState);
     if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
       console.log('[WEBRTC] ICE connection failed or disconnected - stopping stream');
@@ -272,6 +363,7 @@ function createPeerConnection() {
   };
 
   pc.onconnectionstatechange = () => {
+    logFnEntry('pc.onconnectionstatechange');
     console.log('[WEBRTC] Connection state changed:', pc.connectionState);
     if (pc.connectionState === 'connected') {
       setStatus('Connected');
@@ -287,6 +379,7 @@ function createPeerConnection() {
 }
 
 async function handleOffer(offer) {
+  logFnEntry('handleOffer');
   console.log('[WEBRTC] Handling offer:', offer);
   stopStream();
   peerConnection = createPeerConnection();
@@ -307,19 +400,40 @@ async function handleOffer(offer) {
     console.log('[WEBRTC] Setting local description');
     await peerConnection.setLocalDescription(answer);
 
-    socket?.emit('signal', {
+    // prefer room forwarding: omit 'to' if currentRoom exists
+    const payload = {
       type: 'answer',
-      to: ANDROID_ID,
       from: XR_ID,
       data: peerConnection.localDescription
-    });
+    };
+    if (!currentRoom) {
+      payload.to = ANDROID_ID;
+    }
+    console.log('[WEBRTC] Emitting signal (answer) payload:', payload);
+    socket?.emit('signal', payload);
     console.log('[WEBRTC] Answer sent to peer');
   } catch (err) {
     console.error('[WEBRTC] Error handling offer:', err);
   }
 }
 
+async function handleAnswer(answer) {
+  logFnEntry('handleAnswer');
+  console.log('[WEBRTC] Handling answer:', answer);
+  if (!peerConnection) {
+    console.warn('[WEBRTC] Received answer but no peerConnection exists');
+    return;
+  }
+  try {
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+    console.log('[WEBRTC] Remote description (answer) set successfully');
+  } catch (err) {
+    console.error('[WEBRTC] Error setting remote description (answer):', err);
+  }
+}
+
 async function handleRemoteIceCandidate(candidate) {
+  logFnEntry('handleRemoteIceCandidate');
   console.log('[WEBRTC] Handling remote ICE candidate:', candidate);
   if (peerConnection && candidate && candidate.candidate) {
     try {
@@ -334,16 +448,24 @@ async function handleRemoteIceCandidate(candidate) {
   }
 }
 
+// --------------------------
+// Stop / cleanup stream
+// --------------------------
 function stopStream() {
+  logFnEntry('stopStream');
   console.log('[STREAM] Stopping stream');
   isStreamActive = false;
   
   if (videoElement) {
     console.log('[STREAM] Pausing and clearing video element');
-    videoElement.pause();
-    videoElement.srcObject = null;
-    videoElement.removeAttribute('src');
-    videoElement.load();
+    try {
+      videoElement.pause();
+      videoElement.srcObject = null;
+      videoElement.removeAttribute('src');
+      videoElement.load();
+    } catch (e) {
+      console.warn('[STREAM] Video element cleanup error', e);
+    }
   }
 
   if (muteBadge) {
@@ -366,11 +488,15 @@ function stopStream() {
 
   if (remoteStream) {
     console.log('[STREAM] Stopping remote stream tracks');
-    remoteStream.getTracks().forEach(track => { 
-      try { track.stop(); } catch (e) {
-        console.warn('[STREAM] Error stopping track:', e);
-      }
-    });
+    try {
+      remoteStream.getTracks().forEach(track => { 
+        try { track.stop(); } catch (e) {
+          console.warn('[STREAM] Error stopping track:', e);
+        }
+      });
+    } catch (e) {
+      console.warn('[STREAM] remoteStream cleanup error', e);
+    }
     remoteStream = null;
   }
 
@@ -378,7 +504,11 @@ function stopStream() {
   console.log('[STREAM] Stream stopped completely');
 }
 
+// --------------------------
+// UI helpers
+// --------------------------
 function showClickToPlayOverlay() {
+  logFnEntry('showClickToPlayOverlay');
   console.log('[UI] Showing click-to-play overlay');
   if (!videoOverlay) return;
   videoOverlay.style.display = 'flex';
@@ -392,24 +522,11 @@ function showClickToPlayOverlay() {
   };
 }
 
-// function updateDeviceList(devices) {
-//   if (!Array.isArray(devices)) {
-//     console.error("Device list is not an array:", devices);
-//     return;
-//   }
-
-//   console.log('[DEVICES] Updating device list with', devices.length, 'devices');
-//   deviceListElement.innerHTML = '';
-//   devices.forEach(device => {
-//     // server emits { deviceName, xrId }
-//     const name = device.deviceName || device.name || 'Unknown';
-//     console.log(`[DEVICE] Adding device: ${name} (${device.xrId})`);
-//     const li = document.createElement('li');
-//     li.textContent = `${name} (${device.xrId})`;
-//     deviceListElement.appendChild(li);
-//   });
-// }
+// --------------------------
+// Devices list UI
+// --------------------------
 function updateDeviceList(devices) {
+  logFnEntry('updateDeviceList');
   if (!Array.isArray(devices)) {
     console.error("Device list is not an array:", devices);
     return;
@@ -426,8 +543,11 @@ function updateDeviceList(devices) {
   });
 }
 
-
+// --------------------------
+// Chat send
+// --------------------------
 function sendMessage() {
+  logFnEntry('sendMessage');
   const text = messageInput.value.trim();
   console.log('[CHAT] Sending message:', text);
   if (!text) {
@@ -435,15 +555,21 @@ function sendMessage() {
     return;
   }
 
+  // If we have a room, don't put 'to' because server will forward into the room.
   const message = {
     from: XR_ID,
-    to: ANDROID_ID, // direct to Android
     text,
     urgent: urgentCheckbox.checked
   };
 
+  if (!currentRoom) {
+    // fallback to direct target for backward compat
+    message.to = ANDROID_ID;
+  }
+
   console.log('[CHAT] Emitting message to server:', message);
   socket?.emit('message', message);
+
   addMessageToHistory({
     ...message,
     sender: DEVICE_NAME,
@@ -453,7 +579,11 @@ function sendMessage() {
   messageInput.value = '';
 }
 
+// --------------------------
+// Normalization + rendering helpers
+// --------------------------
 function normalizeMessage(message) {
+  logFnEntry('normalizeMessage');
   return {
     text: message.text || '',
     sender: message.sender || message.from || 'unknown',
@@ -464,6 +594,7 @@ function normalizeMessage(message) {
 }
 
 function addMessageToHistory(message) {
+  logFnEntry('addMessageToHistory');
   console.log('[CHAT] Adding message to history:', message);
   const msg = normalizeMessage(message);
   const el = document.createElement('div');
@@ -484,6 +615,7 @@ function addMessageToHistory(message) {
 }
 
 function addToRecentMessages(message) {
+  logFnEntry('addToRecentMessages');
   console.log('[CHAT] Adding to recent messages:', message);
   const msg = normalizeMessage(message);
   const el = document.createElement('div');
@@ -504,6 +636,7 @@ function addToRecentMessages(message) {
 }
 
 function addSystemMessage(text) {
+  logFnEntry('addSystemMessage');
   console.log('[CHAT] Adding system message:', text);
   const el = document.createElement('div');
   el.className = 'system-message';
@@ -513,6 +646,7 @@ function addSystemMessage(text) {
 }
 
 function clearMessages() {
+  logFnEntry('clearMessages');
   console.log('[CHAT] Clearing messages');
   socket?.emit('clear-messages', { by: DEVICE_NAME });
   clearedMessages.clear();
@@ -520,7 +654,11 @@ function clearMessages() {
   addSystemMessage(`🧹 Cleared messages locally by ${DEVICE_NAME}`);
 }
 
+// --------------------------
+// Remote control / commands
+// --------------------------
 function handleControlCommand(data) {
+  logFnEntry('handleControlCommand');
   console.log('[CONTROL] Received control command:', data.command);
   const command = data.command;
   if (!isStreamActive && command !== 'stop_stream') {
@@ -559,15 +697,19 @@ function handleControlCommand(data) {
   }
 }
 
+// --------------------------
 // Event listeners
+// --------------------------
 console.log('[INIT] Setting up event listeners');
-sendButton.addEventListener('click', sendMessage);
-messageInput.addEventListener('keypress', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    sendMessage();
-  }
-});
+if (sendButton) sendButton.addEventListener('click', sendMessage);
+if (messageInput) {
+  messageInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+}
 
 if (clearMessagesBtn) {
   clearMessagesBtn.addEventListener('click', clearMessages);
@@ -575,6 +717,7 @@ if (clearMessagesBtn) {
 
 if (openEmulatorBtn) {
   openEmulatorBtn.addEventListener('click', () => {
+    logFnEntry('openEmulatorBtn.click');
     console.log('[UI] Opening emulator in new window');
     window.open('http://localhost:3000/display.html', '_blank');
   });
@@ -582,6 +725,7 @@ if (openEmulatorBtn) {
 
 if (videoOverlay) {
   videoOverlay.addEventListener('click', () => {
+    logFnEntry('videoOverlay.click');
     console.log('[UI] Video overlay clicked - attempting to play video');
     videoOverlay.style.display = 'none';
     videoElement.play().catch(e => {
@@ -591,6 +735,7 @@ if (videoOverlay) {
 }
 
 window.addEventListener('load', () => {
+  logFnEntry('window.load');
   console.log('[APP] Window loaded - initializing application');
   connectSocketIO();
 });
