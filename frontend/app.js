@@ -640,8 +640,8 @@ let heartbeatInterval = null;
 // CONFIG
 console.log('[CONFIG] Loading configuration');
 // Update to your server URL as needed:
-const SERVER_URL = 'https://10785c75f1e2.ngrok-free.app'; 
-// const SERVER_URL = 'https://xr-messaging-geexbheshbghhab7.centralindia-01.azurewebsites.net';
+// const SERVER_URL = 'https://10785c75f1e2.ngrok-free.app'; 
+const SERVER_URL = 'https://xr-messaging-geexbheshbghhab7.centralindia-01.azurewebsites.net';
 
 const XR_ID = (xrIdInput.value || '').trim() || 'XR-1238';
 const DEVICE_NAME = (usernameInput.value || '').trim() || 'Desktop';
