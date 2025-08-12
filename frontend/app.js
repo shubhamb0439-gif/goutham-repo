@@ -246,7 +246,7 @@ function handleSignalMessage(data) {
       handleRemoteIceCandidate(data.data);
       break;
     case 'answer':
-      console.log('[WEBRTC] ✅ Received answer from peer');
+      console.log('[WEBRTC]  Received answer from peer');
       handleAnswer(data.data);
       break;
     default:

@@ -1,9 +1,3 @@
-// server.js (updated)
-// -----------------------------------------------------------------------------
-// Express + Socket.IO server with one-on-one pairing (room) logic.
-// Preserves existing behavior while adding pair/room concept.
-// -----------------------------------------------------------------------------
-
 const express = require('express');
 const http = require('http');
 const path = require('path');
