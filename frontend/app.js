@@ -2043,42 +2043,42 @@ function handleControlCommand(data) {
 }
 
 // ---------------- 🔷 Pairing helper ----------------
-// function pairWith(peerId) {
-//   console.log('[PAIR] pairWith called for:', peerId);
-//   if (!socket || !socket.connected) {
-//     console.warn('[PAIR] socket not connected, delaying pairWith call');
-//     setTimeout(() => pairWith(peerId), 500);
-//     return;
-//   }
-//   if (!peerId) {
-//     console.warn('[PAIR] Missing peerId');
-//     return;
-//   }
-//   console.log('[PAIR] Emitting pair_with for peer:', peerId);
-//   socket.emit('pair_with', { peerId });
-// }
-
-
-// replace your current pairWith with this
 function pairWith(peerId) {
   console.log('[PAIR] pairWith called for:', peerId);
+  if (!socket || !socket.connected) {
+    console.warn('[PAIR] socket not connected, delaying pairWith call');
+    setTimeout(() => pairWith(peerId), 500);
+    return;
+  }
   if (!peerId) {
     console.warn('[PAIR] Missing peerId');
     return;
   }
-  const doEmit = () => {
-    console.log('[PAIR] Emitting pair_with for peer:', peerId);
-    socket.emit('pair_with', { peerId });
-  };
-  if (socket?.connected) {
-    doEmit();
-  } else if (socket) {
-    console.warn('[PAIR] socket not connected, waiting for connect to pair');
-    socket.once('connect', doEmit); // one-shot; no recursive timers
-  } else {
-    console.warn('[PAIR] socket is null; init then call pairWith again after connect');
-  }
+  console.log('[PAIR] Emitting pair_with for peer:', peerId);
+  socket.emit('pair_with', { peerId });
 }
+
+
+// // replace your current pairWith with this
+// function pairWith(peerId) {
+//   console.log('[PAIR] pairWith called for:', peerId);
+//   if (!peerId) {
+//     console.warn('[PAIR] Missing peerId');
+//     return;
+//   }
+//   const doEmit = () => {
+//     console.log('[PAIR] Emitting pair_with for peer:', peerId);
+//     socket.emit('pair_with', { peerId });
+//   };
+//   if (socket?.connected) {
+//     doEmit();
+//   } else if (socket) {
+//     console.warn('[PAIR] socket not connected, waiting for connect to pair');
+//     socket.once('connect', doEmit); // one-shot; no recursive timers
+//   } else {
+//     console.warn('[PAIR] socket is null; init then call pairWith again after connect');
+//   }
+// }
 
 // ---------------- Event listeners ----------------
 console.log('[INIT] Setting up event listeners');
