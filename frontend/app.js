@@ -2048,7 +2048,7 @@ function ensurePeerReadyThenRequestOffer() {
   requestOfferFromPeer();
 }
 
----------------- Remote control / commands ----------------
+// ---------------- Remote control / commands ----------------
 function handleControlCommand(data) {
   console.log('[CONTROL] Received control command:', data?.command);
   const command = (data?.command || '').toLowerCase();
