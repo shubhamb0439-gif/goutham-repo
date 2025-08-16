@@ -1,4 +1,6 @@
 
+
+
 console.log('[INIT] Initializing DOM elements');
 
 
@@ -77,18 +79,20 @@ const CLEAR_KEY = 'XR_CLEAR_ON_NEXT_CONNECT'; // '1' => wipe on next connect
 // ---------------- CONFIG ----------------
 console.log('[CONFIG] Loading configuration');
 // Update to your server URL as needed:
-// const SERVER_URL = 'https://73b9dc372528.ngrok-free.app';
+// const SERVER_URL = 'https://4fe06d96828a.ngrok-free.app';
 const SERVER_URL = 'https://xr-messaging-geexbheshbghhab7.centralindia-01.azurewebsites.net';
 
 /* ------------- XR_ID / NAME init (updated) ------------- */
 // XR ID is editable from the front-end before connecting
-let XR_ID = normalizeId(xrIdInput.value) || ALLOWED_ID;  // default to XR-1238
-// Make device name mutable so we can force "Desktop1238"
+
+// ========================================
+// Start empty unless the user types it (no default to XR-1238)
+let XR_ID = normalizeId(xrIdInput.value) || '';
 let DEVICE_NAME = (usernameInput.value || '').trim() || 'Desktop';
-// If the initial value is already allowed, label as Desktop1238
 if (isAllowedId(XR_ID)) {
   DEVICE_NAME = `Desktop${ALLOWED_ID_NUM}`;
 }
+
 
 console.log('[CONFIG] Server URL:', SERVER_URL);
 console.log('[CONFIG] XR ID (initial):', XR_ID);
@@ -168,8 +172,12 @@ function stopPresencePings() {
 
 /* ------------- XR ID change listener (updated) ------------- */
 xrIdInput.addEventListener('change', () => {
+  // const newId = normalizeId(xrIdInput.value);
+  // XR_ID = newId || ALLOWED_ID;
+
+  // ===============================
   const newId = normalizeId(xrIdInput.value);
-  XR_ID = newId || ALLOWED_ID;
+  XR_ID = newId; // no fallback
 
   if (!isAllowedId(XR_ID)) {
     // Reset label and hide device list if disallowed
@@ -416,7 +424,9 @@ function toggleConnection() {
   if (!socket) initSocket();
 
   // Always read the latest input
-  XR_ID = normalizeId(xrIdInput.value) || ALLOWED_ID;
+  // XR_ID = normalizeId(xrIdInput.value) || ALLOWED_ID;
+  // ============================================================
+  XR_ID = normalizeId(xrIdInput.value);
 
   if (socket.connected) {
     console.log('[SOCKET] Manual disconnect requested');
@@ -436,7 +446,8 @@ function toggleConnection() {
 
   // Not connected -> only allow connecting if ID is exactly XR-1238
   if (!isAllowedId(XR_ID)) {
-    addSystemMessage(`❌ Connecting blocked. Enter "${ALLOWED_ID_NUM}" (or "${ALLOWED_ID}") first.`);
+    // addSystemMessage(`❌ Connecting blocked. Enter "${ALLOWED_ID_NUM}" (or "${ALLOWED_ID}") first.`);
+    addSystemMessage('Please enter the XR ID to connect (e.g., XR-1238).');
     try { localStorage.setItem(AUTO_KEY, '0'); } catch {}
     setStatus('Disconnected');
     announcePresence('idle');
@@ -586,25 +597,7 @@ function createPeerConnection() {
     });
   };
 
-  // pc.onicecandidate = (event) => {
-  //   if (event.candidate) {
-  //     console.log('[WEBRTC] Generated ICE candidate:', event.candidate);
-  //     // 🔷 Prefer room forwarding (omit 'to' when joined)
-  //     const payload = {
-  //       type: 'ice-candidate',
-  //       from: XR_ID,
-  //       data: event.candidate,
-  //     };
-  //     if (!currentRoom) {
-  //       // Fallback to direct-to behavior for compatibility
-  //       payload.to = currentPeerId();
-  //     }
-  //     console.log('[WEBRTC] Emitting signal (ice-candidate):', payload);
-  //     socket?.emit('signal', payload);
-  //   } else {
-  //     console.log('[WEBRTC] ICE gathering complete');
-  //   }
-  // };
+
  pc.onicecandidate = (event) => {
   if (event.candidate) {
     console.log('[WEBRTC] Generated ICE candidate:', event.candidate);
@@ -643,44 +636,7 @@ function createPeerConnection() {
   return pc;
 }
 
-// async function handleOffer(offer) {
-//   console.log('[WEBRTC] Handling offer:', offer);
-//   stopStream();
-//   peerConnection = createPeerConnection();
 
-//   if (pendingIceCandidates.length > 0) {
-//     console.log('[WEBRTC] Processing', pendingIceCandidates.length, 'pending ICE candidates');
-//     for (const cand of pendingIceCandidates) {
-//       // eslint-disable-next-line no-await-in-loop
-//       await handleRemoteIceCandidate(cand);
-//     }
-//     pendingIceCandidates = [];
-//   }
-
-//   try {
-//     console.log('[WEBRTC] Setting remote description');
-//     await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-//     console.log('[WEBRTC] Creating answer');
-//     const answer = await peerConnection.createAnswer();
-//     console.log('[WEBRTC] Setting local description');
-//     await peerConnection.setLocalDescription(answer);
-
-//     // 🔷 Prefer room forwarding: omit 'to' if currentRoom exists
-//     const payload = {
-//       type: 'answer',
-//       from: XR_ID,
-//       data: peerConnection.localDescription,
-//     };
-//     if (!currentRoom) {
-//       payload.to = currentPeerId();
-//     }
-//     console.log('[WEBRTC] Emitting signal (answer):', payload);
-//     socket?.emit('signal', payload);
-//     console.log('[WEBRTC] Answer sent to peer');
-//   } catch (err) {
-//     console.error('[WEBRTC] Error handling offer:', err);
-//   }
-// }
 async function handleOffer(offer) {
   console.log('[WEBRTC] Handling offer:', offer);
 
@@ -873,38 +829,7 @@ function updateDeviceList(devices) {
   }
 }
 
-// ---------------- Chat send ----------------
-// function sendMessage() {
-//   const text = (messageInput.value || '').trim();
-//   console.log('[CHAT] Sending message:', text);
-//   if (!text) {
-//     console.log('[CHAT] Empty message - not sending');
-//     return;
-//   }
 
-//   // 🔷 If we have a room, omit 'to' so the server forwards to room members
-//   const message = {
-//     from: XR_ID,
-//     text,
-//     urgent: !!urgentCheckbox.checked,
-//   };
-
-//   if (!currentRoom) {
-//     // Fallback to direct-to peer for compatibility
-//     message.to = currentPeerId();
-//   }
-
-//   console.log('[CHAT] Emitting message to server:', message);
-//   socket?.emit('message', message);
-
-//   addMessageToHistory({
-//     ...message,
-//     sender: DEVICE_NAME,
-//     xrId: XR_ID,
-//     timestamp: new Date().toLocaleTimeString(),
-//   });
-//   messageInput.value = '';
-// } 
 function sendMessage() {
   const text = (messageInput.value || '').trim();
   console.log('[CHAT] Sending message:', text);
@@ -957,24 +882,7 @@ function normalizeMessage(message) {
   };
 }
 
-// function addMessageToHistory(message) {
-//   console.log('[CHAT] Adding message to history:', message);
-//   const msg = normalizeMessage(message);
-//   const el = document.createElement('div');
-//   el.className = `message ${msg.priority}`;
-//   el.innerHTML = `
-//     <div class="message-header">
-//       <div class="sender-info">
-//         <span class="sender-name">${msg.sender}</span>
-//         <span class="xr-id">${msg.xrId}</span>
-//       </div>
-//       <div class="message-time">${msg.timestamp}</div>
-//     </div>
-//     <div class="message-content">${msg.text}</div>
-//     ${msg.priority === 'urgent' ? '<div class="urgent-badge">URGENT</div>' : ''}
-//   `;
-//   messageHistoryDiv.appendChild(el);
-//   messageHistoryDiv.scrollTop = messageHistoryDiv.scrollHeight;
+
 // }
 function addMessageToHistory(message) {
   const msg = normalizeMessage(message);
@@ -1054,13 +962,7 @@ function addSystemMessage(text) {
   messageHistoryDiv.scrollTop = messageHistoryDiv.scrollHeight;
 }
 
-// function clearMessages() {
-//   console.log('[CHAT] Clearing messages');
-//   socket?.emit('clear-messages', { by: DEVICE_NAME });
-//   clearedMessages.clear();
-//   recentMessagesDiv.innerHTML = '<div class="system-message">Messages cleared</div>';
-//   addSystemMessage(`🧹 Cleared messages locally by ${DEVICE_NAME}`);
-// }
+
 
 function clearMessages() {
   socket?.emit('clear-messages', { by: DEVICE_NAME });
@@ -1194,26 +1096,6 @@ function pairWith(peerId) {
 }
 
 
-// // replace your current pairWith with this
-// function pairWith(peerId) {
-//   console.log('[PAIR] pairWith called for:', peerId);
-//   if (!peerId) {
-//     console.warn('[PAIR] Missing peerId');
-//     return;
-//   }
-//   const doEmit = () => {
-//     console.log('[PAIR] Emitting pair_with for peer:', peerId);
-//     socket.emit('pair_with', { peerId });
-//   };
-//   if (socket?.connected) {
-//     doEmit();
-//   } else if (socket) {
-//     console.warn('[PAIR] socket not connected, waiting for connect to pair');
-//     socket.once('connect', doEmit); // one-shot; no recursive timers
-//   } else {
-//     console.warn('[PAIR] socket is null; init then call pairWith again after connect');
-//   }
-// }
 
 // ---------------- Event listeners ----------------
 console.log('[INIT] Setting up event listeners');
@@ -1246,7 +1128,8 @@ if (videoOverlay) {
   });
 }
 
-// Manual mode on load: init handlers, then decide whether to auto-connect
+
+// =========================================
 window.addEventListener('load', () => {
   console.log('[APP] Window loaded - initializing (manual connect + refresh-safe)');
 
@@ -1255,7 +1138,7 @@ window.addEventListener('load', () => {
   startPresencePings();
   announcePresence('idle');
 
-  // Detect if this navigation is a reload (vs brand‑new open)
+  // Detect if this navigation is a reload (vs brand-new open)
   const navEntry = performance.getEntriesByType('navigation')[0];
   const isReload = navEntry
     ? navEntry.type === 'reload'
@@ -1281,11 +1164,15 @@ window.addEventListener('load', () => {
 
   if (shouldAuto) {
     console.log('[APP] Auto-connect enabled for reload — dialing now');
-    // Ensure name matches allowed label
-    DEVICE_NAME = `Desktop${ALLOWED_ID_NUM}`;
+
+    // ✅ Ensure XR_ID is set for this reload auto-connect (no effect on manual connects)
+    const chosenId = normalizeId(xrIdInput.value) || ALLOWED_ID;
+    XR_ID = chosenId;
+    DEVICE_NAME = isAllowedId(XR_ID) ? `Desktop${ALLOWED_ID_NUM}` : 'Desktop';
+
     setStatus('Connecting');
     if (socket?.io) socket.io.opts.reconnection = true;
-    socket.connect(); 
+    socket.connect();
   } else {
     console.log('[APP] Starting disconnected (cold open or flag off / disallowed ID)');
     // Normalize flag on cold opens so future loads don't surprise-connect
@@ -1297,5 +1184,6 @@ window.addEventListener('load', () => {
     setStatus('Disconnected'); // show red pill initially
   }
 });
+
 
 console.log('[INIT] Application initialization complete');
