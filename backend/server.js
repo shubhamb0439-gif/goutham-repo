@@ -1,7 +1,8 @@
+
 // ===========================================redis with room concept=================================================================
- 
+
 // server.js (room-concept merged + verbose debug logs)
- 
+
 // // -------------------- Imports & Env --------------------
 const express = require('express');
 const http = require('http');
@@ -11,7 +12,7 @@ const cors = require('cors');
 const { Server } = require('socket.io');
 const { createClient } = require('redis');
 const { createAdapter } = require('@socket.io/redis-adapter');
- 
+
 const dotenv = require('dotenv');
 const envCandidates = [
   path.resolve(__dirname, '.env'),
@@ -27,10 +28,10 @@ for (const p of envCandidates) {
 }
 console.log('[ENV] .env loaded from:', loadedFrom || 'process.env only');
 console.log('[BOOT] Instance:', process.env.WEBSITE_INSTANCE_ID || process.pid);
- 
+
 // -------------------- Debug helpers --------------------
 const DEBUG_LOGS = (process.env.DEBUG_LOGS || 'true').toLowerCase() === 'true';
- 
+
 function dlog(...args) {
   if (DEBUG_LOGS) console.log(...['[DEBUG]'].concat(args));
 }
@@ -52,16 +53,16 @@ function safeDataPreview(obj) {
     return '[unserializable]';
   }
 }
- 
+
 // -------------------- Config & Servers --------------------
 console.log('[INIT] Starting server initialization...');
 const PORT = process.env.PORT || 8080;
 console.log(`[CONFIG] Using port: ${PORT}`);
- 
+
 const app = express();
 const server = http.createServer(app);
 console.log('[HTTP] Server created');
- 
+
 const io = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST'] },
   transports: ['websocket'], // Azure-friendly
@@ -69,12 +70,12 @@ const io = new Server(server, {
   pingTimeout: 30000,
 });
 console.log('[SOCKET.IO] Socket.IO server initialized');
- 
+
 // -------------------- Middleware --------------------
 app.use(cors());
 app.use(express.json());
 console.log('[MIDDLEWARE] CORS + JSON enabled');
- 
+
 // -------------------- Static --------------------
 const staticPaths = [
   path.join(__dirname, 'public'),
@@ -99,7 +100,7 @@ app.get('/scribe-cockpit', (req, res) => {
 });
  
  
- 
+
 // -------------------- TURN Injection --------------------
 function injectTurnConfig(html) {
   dlog('[TURN] injectTurnConfig start');
@@ -114,13 +115,13 @@ function injectTurnConfig(html) {
   dlog('[TURN] injectTurnConfig done');
   return html.replace('</body>', `${cfg}\n</body>`);
 }
- 
+
 // -------------------- Room Concept State --------------------
 const clients = new Map();        // xrId -> socket
 const desktopClients = new Map(); // xrId -> desktop socket
 const onlineDevices = new Map();  // xrId -> socket (convenience)
 dlog('[ROOM] State maps initialized');
- 
+
 const allowedPairs = new Set([normalizePair('XR-1234', 'XR-1238')]);
 const PAIRINGS_MAP = new Map([
   ['XR-1234', 'XR-1238'],
@@ -128,7 +129,7 @@ const PAIRINGS_MAP = new Map([
 ]);
 dlog('[ROOM] allowedPairs:', Array.from(allowedPairs));
 dlog('[ROOM] PAIRINGS_MAP:', Array.from(PAIRINGS_MAP.entries()));
- 
+
 function normalizePair(a, b) {
   return [a, b].sort().join('|');
 }
@@ -162,41 +163,41 @@ async function tryAutoPair(deviceId) {
   const partnerId = PAIRINGS_MAP.get(deviceId);
   dlog('[AUTO_PAIR] partnerId:', partnerId);
   if (!partnerId) return false;
- 
+
   const meSocket = clients.get(deviceId);
   const partnerSocket = clients.get(partnerId);
   dlog('[AUTO_PAIR] me?', !!meSocket, 'partner?', !!partnerSocket);
   if (!meSocket || !partnerSocket) return false;
- 
+
   const allowed = await isPairAllowed(deviceId, partnerId);
   if (!allowed) return false;
- 
+
   const roomId = getRoomIdForPair(deviceId, partnerId);
   const room = io.sockets.adapter.rooms.get(roomId);
   const memberCount = room ? room.size : 0;
   dlog('[AUTO_PAIR] roomId:', roomId, 'current members:', memberCount);
   if (memberCount >= 2) return false;
- 
+
   await meSocket.join(roomId);
   await partnerSocket.join(roomId);
   meSocket.data.roomId = roomId;
   partnerSocket.data.roomId = roomId;
   dlog('[AUTO_PAIR] joined both to', roomId);
- 
+
   const members = listRoomMembers(roomId);
   io.to(roomId).emit('room_joined', { roomId, members });
   dlog('[AUTO_PAIR] room_joined emitted for', roomId, 'members:', members);
   return true;
 }
- 
+
 // -------------------- Utilities --------------------
 function roomOf(xrId) {
   return `xr:${xrId}`;
 }
- 
+
 const messageHistory = [];
 dlog('[STATE] messageHistory initialized');
- 
+
 async function buildDeviceListGlobal() {
   dlog('[DEVICE_LIST] building (global via fetchSockets)');
   const sockets = await io.fetchSockets();
@@ -227,7 +228,7 @@ function addToMessageHistory(message) {
   }
   dlog('[MSG_HISTORY] added; len=', messageHistory.length);
 }
- 
+
 // -------------------- Routes --------------------
 app.get('/health', async (_req, res) => {
   dlog('[HEALTH] request');
@@ -248,7 +249,7 @@ app.get('/health', async (_req, res) => {
     });
   }
 });
- 
+
 app.get('/', (_req, res) => {
   dlog('[ROUTE] /');
   if (!staticPathFound) return res.status(404).send('Static not found');
@@ -261,7 +262,7 @@ app.get('*', (req, res) => {
   const html = fs.readFileSync(path.join(staticPathFound, 'index.html'), 'utf8');
   res.send(injectTurnConfig(html));
 });
- 
+
 // -------------------- Redis Adapter --------------------
 (async () => {
   try {
@@ -281,19 +282,19 @@ app.get('*', (req, res) => {
     derr('[SOCKET.IO] Redis adapter failed; continuing in-memory:', e.message);
   }
 })();
- 
+
 // -------------------- Socket.IO Handlers --------------------
 io.on('connection', (socket) => {
   console.log(`🔌 [CONNECTION] ${socket.id}`);
   dlog('[CONNECTION] handshake.query:', safeDataPreview(socket.handshake?.query));
- 
+
   // Send recent message history
   if (messageHistory.length > 0) {
     const recent = messageHistory.slice(-10);
     dlog('[CONNECTION] sending message_history size=', recent.length);
     socket.emit('message_history', { type: 'message_history', messages: recent });
   }
- 
+
   // -------- join --------
   socket.on('join', (xrId) => {
     dlog('[EVENT] join', xrId);
@@ -311,43 +312,16 @@ io.on('connection', (socket) => {
       }
     })();
   });
- 
+
   // -------- identify --------
-  // socket.on('identify', async ({ deviceName, xrId }) => {
-  //   dlog('[EVENT] identify', { deviceName, xrId });
-  //   socket.data.deviceName = deviceName || 'Unknown';
-  //   socket.data.xrId = xrId;
- 
-  //   socket.join(roomOf(xrId));
-  //   clients.set(xrId, socket);
-  //   onlineDevices.set(xrId, socket);
- 
-  //   if (deviceName?.toLowerCase().includes('desktop') || xrId === 'XR-1238') {
-  //     desktopClients.set(xrId, socket);
-  //     dlog('[IDENTIFY] desktop client tracked', xrId);
-  //   }
- 
-  //   try {
-  //     const list = await buildDeviceListGlobal();
-  //     socket.emit('device_list', list);
-  //     await broadcastDeviceList();
-  //   } catch (e) {
-  //     derr('[identify] device_list error:', e.message);
-  //   }
- 
-  //   try {
-  //     await tryAutoPair(xrId);
-  //   } catch (e) {
-  //     derr('[identify] tryAutoPair error:', e.message);
-  //   }
-  // });
+
   socket.on('identify', async ({ deviceName, xrId }) => {
   dlog('[EVENT] identify', { deviceName, xrId });
- 
+
   // Basic identity
   socket.data.deviceName = deviceName || 'Unknown';
   socket.data.xrId = xrId;
- 
+
   // Always join personal room and register in maps
   try {
     await socket.join(roomOf(xrId));
@@ -356,16 +330,16 @@ io.on('connection', (socket) => {
   }
   clients.set(xrId, socket);
   onlineDevices.set(xrId, socket);
- 
+
   // ---- Refresh-safe desktop handling ----
   // If this is the desktop client, replace any existing desktop socket for the same xrId
   if ((deviceName?.toLowerCase().includes('desktop')) || xrId === 'XR-1238') {
     const existing = desktopClients.get(xrId);
- 
+
     if (existing && existing.id !== socket.id) {
       dlog('[IDENTIFY] Detected existing desktop session for', xrId, '— replacing (likely refresh)');
       const prevRoomId = existing?.data?.roomId;
- 
+
       // Move new socket into the previous room (if any) BEFORE disconnecting old one.
       if (prevRoomId) {
         try {
@@ -380,17 +354,17 @@ io.on('connection', (socket) => {
           socket.data.roomId = null;
         }
       }
- 
+
       // Politely notify and disconnect the old socket
       try { existing.emit('error', { message: 'Replaced by new session (refresh)' }); } catch {}
       try { existing.disconnect(true); } catch (e) { dwarn('[IDENTIFY] error disconnecting old desktop socket:', e?.message || e); }
     }
- 
+
     // Track (or re-track) the desktop socket
     desktopClients.set(xrId, socket);
     dlog('[IDENTIFY] desktop client tracked', xrId);
   }
- 
+
   // Echo list to this client and broadcast updated global list
   try {
     const list = await buildDeviceListGlobal();
@@ -399,7 +373,7 @@ io.on('connection', (socket) => {
   } catch (e) {
     derr('[identify] device_list error:', e.message);
   }
- 
+
   // If not already in a migrated room, attempt server-driven auto-pairing
   try {
     if (!socket.data?.roomId) {
@@ -411,7 +385,7 @@ io.on('connection', (socket) => {
     derr('[identify] tryAutoPair error:', e.message);
   }
 });
- 
+
   // -------- request_device_list --------
   socket.on('request_device_list', async () => {
     dlog('[EVENT] request_device_list');
@@ -421,7 +395,7 @@ io.on('connection', (socket) => {
       dwarn('[request_device_list] failed:', e.message);
     }
   });
- 
+
   // -------- pair_with --------
   socket.on('pair_with', async ({ peerId }) => {
     dlog('[EVENT] pair_with', { me: socket.data?.xrId, peerId });
@@ -441,7 +415,7 @@ io.on('connection', (socket) => {
       const roomId = getRoomIdForPair(me, peerId);
       await socket.join(roomId);
       socket.data.roomId = roomId;
- 
+
       const members = listRoomMembers(roomId);
       io.to(roomId).emit('room_joined', { roomId, members });
       dlog('[pair_with] room_joined emitted', { roomId, members });
@@ -450,7 +424,7 @@ io.on('connection', (socket) => {
       socket.emit('pair_error', { message: 'Internal server error during pairing' });
     }
   });
- 
+
   // -------- signal --------
   socket.on('signal', ({ type, from, to, data }) => {
     dlog('📡 [EVENT] signal', { type, from, to, dataPreview: safeDataPreview(data) });
@@ -472,7 +446,7 @@ io.on('connection', (socket) => {
       derr('[signal] handler error:', err.message);
     }
   });
- 
+
   // -------- control --------
   socket.on('control', ({ command, from, to, message }) => {
     dlog('🎮 [EVENT] control', { command, from, to, message: trimStr(message || '') });
@@ -495,7 +469,7 @@ io.on('connection', (socket) => {
       derr('[control] handler error:', err.message);
     }
   });
- 
+
   // -------- message --------
   socket.on('message', ({ from, to, text, urgent }) => {
     dlog('[EVENT] message', { from, to, urgent, text: trimStr(text || '') });
@@ -511,7 +485,7 @@ io.on('connection', (socket) => {
         timestamp: new Date().toISOString(),
       };
       addToMessageHistory(msg);
- 
+
       if (to) {
         dlog('[message] direct to', to);
         io.to(roomOf(to)).emit('message', msg);
@@ -529,21 +503,21 @@ io.on('connection', (socket) => {
       derr('[message] handler error:', err.message);
     }
   });
- 
+
   // -------- clear-messages --------
   socket.on('clear-messages', ({ by }) => {
     dlog('[EVENT] clear-messages', { by });
     const payload = { type: 'message-cleared', by, messageId: Date.now() };
     io.emit('message-cleared', payload);
   });
- 
+
   // -------- clear_confirmation --------
   socket.on('clear_confirmation', ({ device }) => {
     dlog('[EVENT] clear_confirmation', { device });
     const payload = { type: 'message_cleared', by: device, timestamp: new Date().toISOString() };
     io.emit('message_cleared', payload);
   });
- 
+
   // -------- status_report --------
   socket.on('status_report', ({ from, status }) => {
     dlog('[EVENT] status_report', { from, status: trimStr(status || '') });
@@ -562,7 +536,7 @@ io.on('connection', (socket) => {
       io.emit('status_report', payload);
     }
   });
- 
+
   // -------- message_history (on demand) --------
   socket.on('message_history', () => {
     dlog('[EVENT] message_history request');
@@ -571,43 +545,72 @@ io.on('connection', (socket) => {
       messages: messageHistory.slice(-10),
     });
   });
- 
+
   // -------- disconnect --------
+  // socket.on('disconnect', async (reason) => {
+  //   dlog('❎ [EVENT] disconnect', { reason, xrId: socket.data?.xrId, device: socket.data?.deviceName });
+  //   try {
+  //     const xrId = socket.data?.xrId;
+  //     if (xrId) {
+  //       clients.delete(xrId);
+  //       onlineDevices.delete(xrId);
+  //       if (desktopClients.get(xrId) === socket) {
+  //         desktopClients.delete(xrId);
+  //         dlog('[disconnect] removed desktop client:', xrId);
+  //       }
+  //     }
+  //     await broadcastDeviceList();
+  //   } catch (err) {
+  //     derr('[disconnect] cleanup error:', err.message);
+  //   }
+  // });
   socket.on('disconnect', async (reason) => {
-    dlog('❎ [EVENT] disconnect', { reason, xrId: socket.data?.xrId, device: socket.data?.deviceName });
-    try {
-      const xrId = socket.data?.xrId;
-      if (xrId) {
-        clients.delete(xrId);
-        onlineDevices.delete(xrId);
-        if (desktopClients.get(xrId) === socket) {
-          desktopClients.delete(xrId);
-          dlog('[disconnect] removed desktop client:', xrId);
+  dlog('❎ [EVENT] disconnect', { reason, xrId: socket.data?.xrId, device: socket.data?.deviceName });
+  try {
+    const xrId = socket.data?.xrId;
+    if (xrId) {
+      // Remove from your in-memory maps
+      clients.delete(xrId);
+      onlineDevices.delete(xrId);
+      if (desktopClients.get(xrId) === socket) {
+        desktopClients.delete(xrId);
+        dlog('[disconnect] removed desktop client:', xrId);
+      }
+
+      // 🔔 NEW: emit peer_left to any pair rooms this socket was in
+      for (const roomId of socket.rooms) {
+        if (roomId.startsWith('pair:')) {
+          socket.to(roomId).emit('peer_left', { xrId, roomId });
+          dlog('[disconnect] notified peer_left', { xrId, roomId });
         }
       }
-      await broadcastDeviceList();
-    } catch (err) {
-      derr('[disconnect] cleanup error:', err.message);
     }
-  });
- 
+
+    // Still broadcast full device list so presence sync stays correct
+    await broadcastDeviceList();
+  } catch (err) {
+    derr('[disconnect] cleanup error:', err.message);
+  }
+});
+
+
   // -------- error --------
   socket.on('error', (err) => {
     derr(`[SOCKET_ERROR] ${socket.id}:`, err?.message || err);
   });
 });
- 
+
 // -------------------- Start & Shutdown --------------------
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 [SERVER] Running on http://0.0.0.0:${PORT}`);
 });
- 
+
 process.on('uncaughtException', (err) => {
   derr('[FATAL] uncaughtException:', err?.stack || err?.message || err);
 });
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
- 
+
 function shutdown() {
   console.log('\n[SHUTDOWN] Starting graceful shutdown…');
   try {
