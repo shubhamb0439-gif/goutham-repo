@@ -630,51 +630,51 @@ socket.on('message', (payload) => {
   });
 
   // -------- disconnect --------
+  // socket.on('disconnect', async (reason) => {
+  //   dlog('❎ [EVENT] disconnect', { reason, xrId: socket.data?.xrId, device: socket.data?.deviceName });
+  //   try {
+  //     const xrId = socket.data?.xrId;
+  //     if (xrId) {
+  //       clients.delete(xrId);
+  //       onlineDevices.delete(xrId);
+  //       if (desktopClients.get(xrId) === socket) {
+  //         desktopClients.delete(xrId);
+  //         dlog('[disconnect] removed desktop client:', xrId);
+  //       }
+  //     }
+  //     await broadcastDeviceList();
+  //   } catch (err) {
+  //     derr('[disconnect] cleanup error:', err.message);
+  //   }
+  // });
   socket.on('disconnect', async (reason) => {
-    dlog('❎ [EVENT] disconnect', { reason, xrId: socket.data?.xrId, device: socket.data?.deviceName });
-    try {
-      const xrId = socket.data?.xrId;
-      if (xrId) {
-        clients.delete(xrId);
-        onlineDevices.delete(xrId);
-        if (desktopClients.get(xrId) === socket) {
-          desktopClients.delete(xrId);
-          dlog('[disconnect] removed desktop client:', xrId);
+  dlog('❎ [EVENT] disconnect', { reason, xrId: socket.data?.xrId, device: socket.data?.deviceName });
+  try {
+    const xrId = socket.data?.xrId;
+    if (xrId) {
+      // Remove from your in-memory maps
+      clients.delete(xrId);
+      onlineDevices.delete(xrId);
+      if (desktopClients.get(xrId) === socket) {
+        desktopClients.delete(xrId);
+        dlog('[disconnect] removed desktop client:', xrId);
+      }
+
+      // 🔔 NEW: emit peer_left to any pair rooms this socket was in
+      for (const roomId of socket.rooms) {
+        if (roomId.startsWith('pair:')) {
+          socket.to(roomId).emit('peer_left', { xrId, roomId });
+          dlog('[disconnect] notified peer_left', { xrId, roomId });
         }
       }
-      await broadcastDeviceList();
-    } catch (err) {
-      derr('[disconnect] cleanup error:', err.message);
     }
-  });
-//   socket.on('disconnect', async (reason) => {
-//   dlog('❎ [EVENT] disconnect', { reason, xrId: socket.data?.xrId, device: socket.data?.deviceName });
-//   try {
-//     const xrId = socket.data?.xrId;
-//     if (xrId) {
-//       // Remove from your in-memory maps
-//       clients.delete(xrId);
-//       onlineDevices.delete(xrId);
-//       if (desktopClients.get(xrId) === socket) {
-//         desktopClients.delete(xrId);
-//         dlog('[disconnect] removed desktop client:', xrId);
-//       }
 
-//       // 🔔 NEW: emit peer_left to any pair rooms this socket was in
-//       for (const roomId of socket.rooms) {
-//         if (roomId.startsWith('pair:')) {
-//           socket.to(roomId).emit('peer_left', { xrId, roomId });
-//           dlog('[disconnect] notified peer_left', { xrId, roomId });
-//         }
-//       }
-//     }
-
-//     // Still broadcast full device list so presence sync stays correct
-//     await broadcastDeviceList();
-//   } catch (err) {
-//     derr('[disconnect] cleanup error:', err.message);
-//   }
-// });
+    // Still broadcast full device list so presence sync stays correct
+    await broadcastDeviceList();
+  } catch (err) {
+    derr('[disconnect] cleanup error:', err.message);
+  }
+});
 
 
   // -------- error --------
