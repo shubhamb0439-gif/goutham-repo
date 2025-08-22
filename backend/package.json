@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
-     "prestart": "mkdir -p ./public && cp ../frontend/scribe-cockpit.html ./public/",
     "start": "node server.js"
   },
   "dependencies": {
