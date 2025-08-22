@@ -1,8 +1,3 @@
-
-// ===========================================redis with room concept=================================================================
-
-// server.js (room-concept merged + verbose debug logs)
-
 // // -------------------- Imports & Env --------------------
 const express = require('express');
 const http = require('http');
@@ -28,10 +23,8 @@ for (const p of envCandidates) {
 }
 console.log('[ENV] .env loaded from:', loadedFrom || 'process.env only');
 console.log('[BOOT] Instance:', process.env.WEBSITE_INSTANCE_ID || process.pid);
-
 // -------------------- Debug helpers --------------------
 const DEBUG_LOGS = (process.env.DEBUG_LOGS || 'true').toLowerCase() === 'true';
-
 function dlog(...args) {
   if (DEBUG_LOGS) console.log(...['[DEBUG]'].concat(args));
 }
@@ -53,16 +46,13 @@ function safeDataPreview(obj) {
     return '[unserializable]';
   }
 }
-
 // -------------------- Config & Servers --------------------
 console.log('[INIT] Starting server initialization...');
 const PORT = process.env.PORT || 8080;
 console.log(`[CONFIG] Using port: ${PORT}`);
-
 const app = express();
 const server = http.createServer(app);
 console.log('[HTTP] Server created');
-
 const io = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST'] },
   transports: ['websocket'], // Azure-friendly
@@ -70,12 +60,10 @@ const io = new Server(server, {
   pingTimeout: 30000,
 });
 console.log('[SOCKET.IO] Socket.IO server initialized');
-
 // -------------------- Middleware --------------------
 app.use(cors());
 app.use(express.json());
 console.log('[MIDDLEWARE] CORS + JSON enabled');
-
 // -------------------- Static --------------------
 const staticPaths = [
   path.join(__dirname, 'public'),
@@ -92,13 +80,18 @@ for (const dir of staticPaths) {
   }
 }
 if (!staticPathFound) dwarn('⚠️ No static path found.');
-// Route for cockpit page
-app.get('/scribe-cockpit', (req, res) => {
-  const cockpitPath = path.join(__dirname, 'public', 'scribe-cockpit.html');
-  console.log('[ROUTE] /scribe-cockpit hit, serving:', cockpitPath);
-  res.sendFile(cockpitPath);
+ 
+// Route for cockpit page (works with backend/public or ../frontend)
+app.get(['/scribe-cockpit', '/scribe-cockpit.html'], (req, res) => {
+  const candidates = [
+    path.join(__dirname, 'public', 'scribe-cockpit.html'),
+    path.join(__dirname, '..', 'frontend', 'scribe-cockpit.html'),
+  ];
+  const hit = candidates.find(p => fs.existsSync(p));
+  console.log('[ROUTE] /scribe-cockpit hit. Candidates:', candidates, 'Chosen:', hit);
+  if (!hit) return res.status(404).send('scribe-cockpit.html not found');
+  res.sendFile(hit);
 });
-
 // -------------------- TURN Injection --------------------
 function injectTurnConfig(html) {
   dlog('[TURN] injectTurnConfig start');
