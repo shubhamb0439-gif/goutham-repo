@@ -94,7 +94,9 @@ for (const dir of staticPaths) {
 if (!staticPathFound) dwarn('⚠️ No static path found.');
 // Route for cockpit page
 app.get('/scribe-cockpit', (req, res) => {
-  const cockpitPath = path.join(__dirname, '../frontend/scribe-cockpit.html');
+  // const cockpitPath = path.join(__dirname, '../frontend/scribe-cockpit.html');
+  const cockpitPath = path.join(__dirname, 'scribe-cockpit.html');
+
   console.log('[ROUTE] /scribe-cockpit hit');
   res.sendFile(cockpitPath);
 });
