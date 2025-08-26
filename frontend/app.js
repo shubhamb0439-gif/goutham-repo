@@ -103,7 +103,8 @@ const CLEAR_KEY = 'XR_CLEAR_ON_NEXT_CONNECT'; // '1' => wipe on next connect
 // ---------------- CONFIG ----------------
 console.log('[CONFIG] Loading configuration');
 // Update to your server URL as needed:
-// const SERVER_URL = 'https://0630ca54cd9b.ngrok-free.app';
+// const SERVER_URL = 'https://97b5283635f7.ngrok-free.app';
+
 const SERVER_URL = 'https://xr-messaging-geexbheshbghhab7.centralindia-01.azurewebsites.net';
 
 /* ------------- XR_ID / NAME init (updated) ------------- */
@@ -411,6 +412,18 @@ function initSocket() {
       console.warn('[SOCKET] Duplicate desktop notice from server:', data.message);
       addSystemMessage('⚠️ This XR ID is already active in another tab/window.');
     }
+
+
+  });
+
+    // 🔒 Hard block from server: XR-ID already in use elsewhere
+  socket.on('duplicate_id', ({ xrId, holderInfo }) => {
+    console.warn('[SOCKET] duplicate_id from server:', xrId, holderInfo);
+    addSystemMessage(`❌ XR ID ${xrId} is already in use on another device/session.`);
+    try { localStorage.setItem(AUTO_KEY, '0'); } catch {}
+    setStatus('Disconnected');
+    if (socket?.connected) socket.disconnect();
+    announcePresence('idle');
   });
 
   // --- your existing handlers ---
@@ -1267,6 +1280,16 @@ window.addEventListener('load', () => {
     setStatus('Disconnected'); // show red pill initially
   }
 });
+
+// --- Scribe Cockpit opener ---
+(() => {
+  const btn = document.getElementById('openScribeBtn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    const url = `${location.origin}/scribe-cockpit`;
+    window.open(url, '_blank', 'noopener'); // new tab; keep current app intact
+  });
+})();
 
 
 console.log('[INIT] Application initialization complete');
