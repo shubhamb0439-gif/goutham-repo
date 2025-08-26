@@ -1268,5 +1268,15 @@ window.addEventListener('load', () => {
   }
 });
 
+// --- Scribe Cockpit opener ---
+(() => {
+  const btn = document.getElementById('openScribeBtn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    const url = `${location.origin}/scribe-cockpit`;
+    window.open(url, '_blank', 'noopener'); // new tab; keep current app intact
+  });
+})();
+
 
 console.log('[INIT] Application initialization complete');
