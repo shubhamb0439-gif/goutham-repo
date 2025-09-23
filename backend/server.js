@@ -50,6 +50,12 @@ function safeDataPreview(obj) {
     return '[unserializable]';
   }
 }
+
+// NEW: numeric coercion helper for telemetry
+function numOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 // -------------------- Config & Servers --------------------
 console.log('[INIT] Starting server initialization...');
 const PORT = process.env.PORT || 8080;
@@ -59,7 +65,7 @@ const server = http.createServer(app);
 console.log('[HTTP] Server created');
 const io = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST'] },
-  transports: ['websocket'], // Azure-friendly
+  transports: ['websocket', 'polling'],   // ← include polling
   pingInterval: 25000,
   pingTimeout: 30000,
 });
@@ -68,11 +74,55 @@ console.log('[SOCKET.IO] Socket.IO server initialized');
 app.use(cors());
 app.use(express.json());
 console.log('[MIDDLEWARE] CORS + JSON enabled');
+
+// Hard 404 for dashboard on 8080 (exact paths)
+app.get(['/dashboard', '/dashboard.html'], (req, res) => {
+  return res.status(404).type('text/plain').send('Not Found');
+});
+
+// Block any /dashboard/* on 8080
+// app.use((req, res, next) => {
+//   const p = (req.path || '').toLowerCase();
+//   if (p === '/dashboard' || p === '/dashboard.html' || p.startsWith('/dashboard/')) {
+//     return res.status(404).type('text/plain').send('Not Found');
+//   }
+//   next();
+// });
+
+
+// Block /dashboard/* only when users hit this app directly on :8080
+app.use((req, res, next) => {
+  // Prefer originalUrl (includes mount paths) and strip query
+  const p = (req.originalUrl || '').split('?')[0].toLowerCase();
+
+  // Detect direct access on :8080
+  const host = (req.headers.host || '').toLowerCase();
+  const isDirect8080 =
+    host.endsWith(':8080') ||
+    req.socket?.localPort === 8080 || // works when Node listens on 8080
+    req.socket?.address()?.port === 8080;
+
+  const isDashboard =
+    p === '/dashboard' ||
+    p === '/dashboard.html' ||
+    p.startsWith('/dashboard/');
+
+  if (isDirect8080 && isDashboard) {
+    return res.status(404).type('text/plain').send('Not Found');
+  }
+  next();
+});
+
+
+
+
+// -------------------- Static --------------------
+
 // -------------------- Static --------------------
 const staticPaths = [
-  path.join(__dirname, 'public'),
-  path.join(__dirname, '../frontend'),
+  path.join(__dirname, 'public'), // keep only this on 8080
 ];
+
 let staticPathFound = null;
 for (const dir of staticPaths) {
   if (fs.existsSync(dir)) {
@@ -84,6 +134,7 @@ for (const dir of staticPaths) {
   }
 }
 if (!staticPathFound) dwarn('⚠️ No static path found.');
+
 
 // Route for cockpit page (works with backend/public or ../frontend)
 app.get(['/scribe-cockpit', '/scribe-cockpit.html'], (req, res) => {
@@ -115,7 +166,31 @@ function injectTurnConfig(html) {
 const clients = new Map();        // xrId -> socket
 const desktopClients = new Map(); // xrId -> desktop socket
 const onlineDevices = new Map();  // xrId -> socket (convenience)
+// NEW: latest battery snapshot per device
+const batteryByDevice = new Map(); // xrId -> { pct, charging, ts }
+
+// NEW: latest network telemetry per device
+// shape: { xrId, connType, wifiDbm, wifiMbps, wifiBars, cellDbm, cellBars, ts }
+const telemetryByDevice = new Map();
+
+const qualityByDevice = new Map(); // xrId -> latest webrtc quality snapshot
+
 dlog('[ROOM] State maps initialized');
+
+// --- Time-series history for charts (keep last 24 hours) ---
+const METRIC_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+const telemetryHist = new Map(); // xrId -> [{ ts, connType, wifiMbps, netDownMbps, netUpMbps, batteryPct }]
+const qualityHist = new Map();   // xrId -> [{ ts, jitterMs, rttMs, lossPct, bitrateKbps }]
+
+
+function pushHist(map, xrId, sample) {
+  const arr = map.get(xrId) || [];
+  arr.push(sample);
+  const cutoff = Date.now() - METRIC_WINDOW_MS;
+  while (arr.length && arr[0].ts < cutoff) arr.shift();
+  map.set(xrId, arr);
+}
+
 
 const allowedPairs = new Set([normalizePair('XR-1234', 'XR-1238')]);
 const PAIRINGS_MAP = new Map([
@@ -153,6 +228,27 @@ function listRoomMembers(roomId) {
   dlog('[ROOM] listRoomMembers', roomId, '=>', members);
   return members;
 }
+
+function collectPairs() {
+  const pairs = [];
+  for (const [roomId] of io.sockets.adapter.rooms) {
+    if (!roomId.startsWith('pair:')) continue;
+    const members = listRoomMembers(roomId); // returns xrIds
+    if (members.length >= 2) {
+      const key = normalizePair(members[0], members[1]);
+      const [a, b] = key.split('|');
+      pairs.push({ a, b });
+    }
+  }
+  return pairs;
+}
+
+function broadcastPairs() {
+  const pairs = collectPairs();
+  io.emit('room_update', { pairs });
+  dlog('[PAIR] broadcastPairs:', pairs);
+}
+
 async function tryAutoPair(deviceId) {
   dlog('[AUTO_PAIR] attempt for', deviceId);
   const partnerId = PAIRINGS_MAP.get(deviceId);
@@ -182,6 +278,9 @@ async function tryAutoPair(deviceId) {
   const members = listRoomMembers(roomId);
   io.to(roomId).emit('room_joined', { roomId, members });
   dlog('[AUTO_PAIR] room_joined emitted for', roomId, 'members:', members);
+
+  // NEW: tell dashboards the pair is active
+  broadcastPairs();
   return true;
 }
 
@@ -193,19 +292,52 @@ function roomOf(xrId) {
 const messageHistory = [];
 dlog('[STATE] messageHistory initialized');
 
+// async function buildDeviceListGlobal() {
+//   dlog('[DEVICE_LIST] building (global via fetchSockets)');
+//   const sockets = await io.fetchSockets();
+//   const byId = new Map();
+//   for (const s of sockets) {
+//     const id = s?.data?.xrId;
+//     if (!id) continue;
+//     byId.set(id, { xrId: id, deviceName: s.data.deviceName || 'Unknown' });
+//   }
+//   const list = [...byId.values()];
+//   dlog('[DEVICE_LIST] built:', list);
+//   return list;
+// }
+
 async function buildDeviceListGlobal() {
   dlog('[DEVICE_LIST] building (global via fetchSockets)');
   const sockets = await io.fetchSockets();
   const byId = new Map();
+
   for (const s of sockets) {
     const id = s?.data?.xrId;
     if (!id) continue;
-    byId.set(id, { xrId: id, deviceName: s.data.deviceName || 'Unknown' });
+
+    // Pull latest battery snapshot if we have one
+    const b = batteryByDevice?.get(id) || {};
+    // 🔵 NEW: network telemetry snapshot
+    const t = telemetryByDevice?.get(id) || null;
+
+    byId.set(id, {
+      xrId: id,
+      deviceName: s.data?.deviceName || 'Unknown',
+      // Battery fields
+      battery: (typeof b.pct === 'number') ? b.pct : null,
+      charging: !!b.charging,
+      batteryTs: b.ts || null,
+      // 🔵 Telemetry fields (optional)
+      ...(t ? { telemetry: t } : {}),
+    });
   }
+
   const list = [...byId.values()];
   dlog('[DEVICE_LIST] built:', list);
   return list;
 }
+
+
 async function broadcastDeviceList() {
   dlog('[DEVICE_LIST] broadcast start');
   try {
@@ -263,12 +395,76 @@ app.get('/', (_req, res) => {
   const html = fs.readFileSync(path.join(staticPathFound, 'index.html'), 'utf8');
   res.send(injectTurnConfig(html));
 });
+
+
+// ---- Desktop HTTP telemetry (beginner path) ----
+app.post('/desktop-telemetry', (req, res) => {
+  try {
+    const d = req.body || {};
+    const xrId = typeof d.xrId === 'string' ? d.xrId : null;
+    if (!xrId) return res.status(400).json({ error: 'xrId required' });
+
+    const rec = {
+      xrId,
+      connType: d.connType || 'other',
+      // network (optional)
+      wifiDbm: numOrNull(d.wifiDbm),
+      wifiMbps: numOrNull(d.wifiMbps),
+      wifiBars: numOrNull(d.wifiBars),
+      cellDbm: numOrNull(d.cellDbm),
+      cellBars: numOrNull(d.cellBars),
+      netDownMbps: numOrNull(d.netDownMbps),
+      netUpMbps: numOrNull(d.netUpMbps),
+      // system
+      cpuPct: numOrNull(d.cpuPct),
+      memUsedMb: numOrNull(d.memUsedMb),
+      memTotalMb: numOrNull(d.memTotalMb),
+      deviceTempC: numOrNull(d.deviceTempC),
+      ts: Date.now(),
+    };
+
+    // latest snapshot for device rows
+    telemetryByDevice.set(xrId, rec);
+
+    // history (drives charts/detail modal)
+    pushHist(telemetryHist, xrId, {
+      ts: rec.ts,
+      connType: rec.connType,
+      wifiMbps: rec.wifiMbps,
+      netDownMbps: rec.netDownMbps,
+      netUpMbps: rec.netUpMbps,
+      batteryPct: batteryByDevice.get(xrId)?.pct ?? null,
+      cpuPct: rec.cpuPct,
+      memUsedMb: rec.memUsedMb,
+      memTotalMb: rec.memTotalMb,
+      deviceTempC: rec.deviceTempC,
+    });
+
+    // broadcast to dashboards (same event Android uses)
+    io.emit('telemetry_update', rec);
+
+    dlog('[desktop-telemetry] update', rec);
+    res.status(204).end();
+  } catch (e) {
+    dwarn('[desktop-telemetry] bad payload:', e?.message || e);
+    res.status(400).json({ error: 'bad payload' });
+  }
+});
+
+
 app.get('*', (req, res) => {
-  dlog('[ROUTE] *', req.path);
+  const p = (req.path || '').toLowerCase();
+  if (p === '/dashboard' || p === '/dashboard.html' || p.startsWith('/dashboard/')) {
+    return res.status(404).type('text/plain').send('Not Found');
+  }
   if (!staticPathFound) return res.status(404).send('Static not found');
+
   const html = fs.readFileSync(path.join(staticPathFound, 'index.html'), 'utf8');
   res.send(injectTurnConfig(html));
 });
+
+
+
 
 // -------------------- Redis Adapter --------------------
 (async () => {
@@ -290,6 +486,8 @@ app.get('*', (req, res) => {
   }
 })();
 
+
+
 // -------------------- SOAP Note Generator --------------------
 async function generateSoapNote(transcript) {
   try {
@@ -303,12 +501,12 @@ async function generateSoapNote(transcript) {
       - Assessment
       - Plan
       - Medication
-
+ 
       Rules:
       - Each section should be an array of strings OR "No data available".
       - If info missing, explicitly write "No data available".
       - JSON only, no extra commentary.
-
+ 
       Transcript:
       ${transcript.trim()}
     `;
@@ -356,7 +554,6 @@ async function generateSoapNote(transcript) {
   }
 }
 
-
 // -------------------- Socket.IO Handlers --------------------
 io.on('connection', (socket) => {
   console.log(`🔌 [CONNECTION] ${socket.id}`);
@@ -368,6 +565,20 @@ io.on('connection', (socket) => {
     dlog('[CONNECTION] sending message_history size=', recent.length);
     socket.emit('message_history', { type: 'message_history', messages: recent });
   }
+
+  // after sending message_history (or right at the top of the connection handler)
+  (async () => {
+    try {
+      // send current presence snapshot
+      const list = await buildDeviceListGlobal();
+      socket.emit('device_list', list);
+
+      // send current active pair snapshot
+      socket.emit('room_update', { pairs: collectPairs() });
+    } catch (e) {
+      dwarn('[connection] initial snapshots failed:', e?.message || e);
+    }
+  })();
 
   // -------- join --------
   socket.on('join', (xrId) => {
@@ -466,6 +677,23 @@ io.on('connection', (socket) => {
     }
   });
 
+  // -------- metrics_subscribe / unsubscribe (NEW) --------
+  socket.on('metrics_subscribe', ({ xrId }) => {
+    if (!xrId) return;
+    socket.join(`metrics:${xrId}`);
+    socket.emit('metrics_snapshot', {
+      xrId,
+      telemetry: telemetryHist.get(xrId) || [],
+      quality: qualityHist.get(xrId) || [],
+    });
+  });
+
+  socket.on('metrics_unsubscribe', ({ xrId }) => {
+    if (!xrId) return;
+    socket.leave(`metrics:${xrId}`);
+  });
+
+
 
 
   // -------- request_device_list --------
@@ -501,16 +729,85 @@ io.on('connection', (socket) => {
       const members = listRoomMembers(roomId);
       io.to(roomId).emit('room_joined', { roomId, members });
       dlog('[pair_with] room_joined emitted', { roomId, members });
+
+      // NEW: push active pair state to dashboards
+      broadcastPairs();
     } catch (err) {
       derr('[pair_with] error:', err.message);
       socket.emit('pair_error', { message: 'Internal server error during pairing' });
     }
   });
 
+  // // -------- signal --------
+  // socket.on('signal', ({ type, from, to, data }) => {
+  //   dlog('📡 [EVENT] signal', { type, from, to, dataPreview: safeDataPreview(data) });
+  //   try {
+  //     if (to) {
+  //       dlog('[signal] direct target routing to', to);
+  //       io.to(roomOf(to)).emit('signal', { type, from, data });
+  //       return;
+  //     }
+  //     const roomId = socket.data?.roomId;
+  //     if (!roomId) {
+  //       dwarn('[signal] no "to" and no roomId; ignoring');
+  //       socket.emit('signal_error', { message: 'No room joined and no "to" specified' });
+  //       return;
+  //     }
+  //     dlog('[signal] room forward', roomId);
+  //     socket.to(roomId).emit('signal', { type, from, data });
+  //   } catch (err) {
+  //     derr('[signal] handler error:', err.message);
+  //   }
+  // });
+
   // -------- signal --------
-  socket.on('signal', ({ type, from, to, data }) => {
-    dlog('📡 [EVENT] signal', { type, from, to, dataPreview: safeDataPreview(data) });
+  socket.on('signal', (payload) => {
+    // 1) Normalize payload (object or JSON string)
+    let msg = payload;
+    try { msg = (typeof payload === 'string') ? JSON.parse(payload) : (payload || {}); }
+    catch (e) { return dwarn('[signal] JSON parse failed'); }
+
+    const { type } = msg;
+    dlog('📡 [EVENT] signal', { type, preview: safeDataPreview(msg) });
+
     try {
+      // 2) Intercept Android/Dock quality feed and **return** (don’t fall through)
+      if (type === 'webrtc_quality_update') {
+        const deviceId = msg.deviceId;
+        const samples = Array.isArray(msg.samples) ? msg.samples : [];
+
+        if (deviceId && samples.length) {
+          // Store to the existing per-device history so your detail modal works
+          for (const s of samples) {
+            pushHist(qualityHist, deviceId, {
+              ts: s.ts,
+              jitterMs: numOrNull(s.jitterMs),
+              rttMs: numOrNull(s.rttMs),
+              lossPct: numOrNull(s.lossPct),
+              bitrateKbps: numOrNull(s.bitrateKbps),
+            });
+          }
+
+          // Stream the latest deltas to any open detail modal subscribers
+          io.to(`metrics:${deviceId}`).emit('metrics_update', {
+            xrId: deviceId,
+            quality: samples.map(s => ({
+              ts: s.ts,
+              jitterMs: s.jitterMs,
+              rttMs: s.rttMs,
+              lossPct: s.lossPct,
+              bitrateKbps: s.bitrateKbps,
+            })),
+          });
+
+          // Broadcast to dashboards (powers the connection tiles)
+          io.emit('webrtc_quality_update', { deviceId, samples });
+        }
+        return; // ✅ do not route as a regular signaling message
+      }
+
+      // 3) Existing offer/answer/ICE path (unchanged)
+      const { from, to, data } = msg;
       if (to) {
         dlog('[signal] direct target routing to', to);
         io.to(roomOf(to)).emit('signal', { type, from, data });
@@ -528,6 +825,7 @@ io.on('connection', (socket) => {
       derr('[signal] handler error:', err.message);
     }
   });
+
 
   // -------- control --------
   socket.on('control', ({ command, from, to, message }) => {
@@ -555,6 +853,7 @@ io.on('connection', (socket) => {
 
 
 
+
   // -------- message (transcript -> web console via signal) --------
   socket.on('message', (payload) => {
     dlog('[EVENT] message', safeDataPreview(payload));
@@ -574,46 +873,46 @@ io.on('connection', (socket) => {
     const timestamp = data?.timestamp || new Date().toISOString();
 
     // ✳️ Intercept transcripts: forward to desktop's web console via a signal, then STOP
-   if (type === 'transcript') {
-  const out = {
-    type: 'transcript',
-    from,
-    to,
-    text,
-    final: !!data?.final,
-    timestamp,
-  };
+    if (type === 'transcript') {
+      const out = {
+        type: 'transcript',
+        from,
+        to,
+        text,
+        final: !!data?.final,
+        timestamp,
+      };
 
-  try {
-    if (to) {
-      io.to(roomOf(to)).emit('signal', { type: 'transcript_console', from, data: out });
-      dlog('[transcript] emitted signal "transcript_console" to', to);
-    } else if (socket.data?.roomId) {
-      io.to(socket.data.roomId).emit('signal', { type: 'transcript_console', from, data: out });
-      dlog('[transcript] emitted signal "transcript_console" to room', socket.data.roomId);
+      try {
+        if (to) {
+          io.to(roomOf(to)).emit('signal', { type: 'transcript_console', from, data: out });
+          dlog('[transcript] emitted signal "transcript_console" to', to);
+        } else if (socket.data?.roomId) {
+          io.to(socket.data.roomId).emit('signal', { type: 'transcript_console', from, data: out });
+          dlog('[transcript] emitted signal "transcript_console" to room', socket.data.roomId);
+        }
+
+        //  Generate SOAP note if this transcript is final
+        if (out.final && out.text) {
+          (async () => {
+            const soapNote = await generateSoapNote(out.text);
+
+            // Send SOAP note back to app.js  console
+            io.to(socket.data?.roomId || roomOf(to)).emit('signal', {
+              type: 'soap_note_console',
+              from,
+              data: soapNote,
+            });
+
+            console.log('[SOAP_NOTE]', JSON.stringify(soapNote, null, 2));
+          })();
+        }
+      } catch (e) {
+        dwarn('[transcript] emit failed:', e.message);
+      }
+
+      return; // stop normal message path
     }
-
-    //  Generate SOAP note if this transcript is final
-    if (out.final && out.text) {
-      (async () => {
-        const soapNote = await generateSoapNote(out.text);
-
-        // Send SOAP note back to app.js  console
-        io.to(socket.data?.roomId || roomOf(to)).emit('signal', {
-          type: 'soap_note_console',
-          from,
-          data: soapNote,
-        });
-
-        console.log('[SOAP_NOTE]', JSON.stringify(soapNote, null, 2));
-      })();
-    }
-  } catch (e) {
-    dwarn('[transcript] emit failed:', e.message);
-  }
-
-  return; // stop normal message path
-}
 
 
     // Normal chat message path (unchanged)
@@ -685,6 +984,185 @@ io.on('connection', (socket) => {
     }
   });
 
+  // -------- battery (NEW) --------
+  socket.on('battery', ({ xrId, batteryPct, charging }) => {
+    try {
+      const id = xrId || socket.data?.xrId;
+      if (!id) return;
+      const pct = Math.max(0, Math.min(100, Number(batteryPct)));
+      const rec = { pct, charging: !!charging, ts: Date.now() };
+
+      batteryByDevice.set(id, rec);
+      io.emit('battery_update', { xrId: id, pct: rec.pct, charging: rec.charging, ts: rec.ts });
+      dlog('[battery] update', { id, pct: rec.pct, charging: rec.charging });
+    } catch (e) {
+      dwarn('[battery] bad payload:', e?.message || e);
+    }
+  });
+
+  // -------- telemetry (NEW) --------
+  // -------- telemetry (NEW) --------
+  // socket.on('telemetry', (payload) => {
+  //   try {
+  //     const d = typeof payload === 'string' ? JSON.parse(payload) : (payload || {});
+  //     const xrId = d.xrId || socket.data?.xrId;
+  //     if (!xrId) return;
+
+  //     const rec = {
+  //       xrId,
+  //       connType: d.connType || 'none',   // 'wifi' | 'cellular' | 'ethernet' | 'other' | 'none'
+  //       wifiDbm: numOrNull(d.wifiDbm),
+  //       wifiMbps: numOrNull(d.wifiMbps),
+  //       wifiBars: numOrNull(d.wifiBars),
+  //       cellDbm: numOrNull(d.cellDbm),
+  //       cellBars: numOrNull(d.cellBars),
+  //       netDownMbps: numOrNull(d.netDownMbps),
+  //       netUpMbps: numOrNull(d.netUpMbps),
+  //       ts: Date.now(),
+  //     };
+
+  //     // keep latest
+  //     telemetryByDevice.set(xrId, rec);
+
+  //     // 🔵 push into time-series history (for charts)
+  //     pushHist(telemetryHist, xrId, {
+  //       ts: rec.ts,
+  //       connType: rec.connType,
+  //       wifiMbps: rec.wifiMbps,
+  //       netDownMbps: rec.netDownMbps,
+  //       netUpMbps: rec.netUpMbps,
+  //       // pull current battery if we have it
+  //       batteryPct: batteryByDevice.get(xrId)?.pct ?? null,
+  //     });
+
+  //     // 🔵 live delta to subscribers of this device’s detail modal
+  //     io.to(`metrics:${xrId}`).emit('metrics_update', {
+  //       xrId,
+  //       telemetry: [telemetryHist.get(xrId).at(-1)]
+  //     });
+
+  //     // existing broadcast that powers the summary row
+  //     io.emit('telemetry_update', rec);
+
+  //     dlog('[telemetry] update', rec);
+  //   } catch (e) {
+  //     dwarn('[telemetry] bad payload:', e?.message || e);
+  //   }
+  // });
+
+  // -------- telemetry (NEW) --------
+  // -------- telemetry (NEW) --------
+  socket.on('telemetry', (payload) => {
+    try {
+      const d = typeof payload === 'string' ? JSON.parse(payload) : (payload || {});
+      const xrId = d.xrId || socket.data?.xrId;
+      if (!xrId) return;
+
+      // keep ALL fields (network + system)
+      const rec = {
+        xrId,
+        connType: d.connType || 'none',
+
+        // network (existing)
+        wifiDbm: numOrNull(d.wifiDbm),
+        wifiMbps: numOrNull(d.wifiMbps),
+        wifiBars: numOrNull(d.wifiBars),
+        cellDbm: numOrNull(d.cellDbm),
+        cellBars: numOrNull(d.cellBars),
+        netDownMbps: numOrNull(d.netDownMbps),
+        netUpMbps: numOrNull(d.netUpMbps),
+
+        // 🔵 system (NEW)
+        cpuPct: numOrNull(d.cpuPct),
+        memUsedMb: numOrNull(d.memUsedMb),
+        memTotalMb: numOrNull(d.memTotalMb),
+        deviceTempC: numOrNull(d.deviceTempC),
+
+        ts: Date.now(),
+      };
+
+      // keep latest snapshot for device rows
+      telemetryByDevice.set(xrId, rec);
+
+      // time-series history (for modal charts)
+      pushHist(telemetryHist, xrId, {
+        ts: rec.ts,
+        connType: rec.connType,
+        wifiMbps: rec.wifiMbps,
+        netDownMbps: rec.netDownMbps,
+        netUpMbps: rec.netUpMbps,
+        batteryPct: batteryByDevice.get(xrId)?.pct ?? null,
+
+        // include system series
+        cpuPct: rec.cpuPct,
+        memUsedMb: rec.memUsedMb,
+        memTotalMb: rec.memTotalMb,
+        deviceTempC: rec.deviceTempC,
+      });
+
+      // live delta for open detail modal subscribers
+      io.to(`metrics:${xrId}`).emit('metrics_update', {
+        xrId,
+        telemetry: [telemetryHist.get(xrId).at(-1)]
+      });
+
+      // broadcast the latest snapshot to dashboards
+      io.emit('telemetry_update', rec);
+
+      dlog('[telemetry] update', rec);
+    } catch (e) {
+      dwarn('[telemetry] bad payload:', e?.message || e);
+    }
+  });
+
+
+
+
+  socket.on('webrtc_quality', (q) => {
+    dlog('[QUALITY] recv', q);
+    try {
+      const xrId = (q && q.xrId) || socket.data?.xrId;
+      if (!xrId) return;
+
+      const snap = {
+        xrId,
+        ts: q.ts || Date.now(),
+        jitterMs: numOrNull(q.jitterMs),
+        lossPct: numOrNull(q.lossPct),
+        rttMs: numOrNull(q.rttMs),
+        fps: numOrNull(q.fps),
+        dropped: numOrNull(q.dropped),
+        nackCount: numOrNull(q.nackCount),
+        // optional if your Dock computes it and sends it:
+        bitrateKbps: numOrNull(q.bitrateKbps),
+      };
+
+      // keep latest (powers center tiles)
+      qualityByDevice.set(xrId, snap);
+
+      // 🔵 store to history + stream to detail subscribers
+      pushHist(qualityHist, xrId, {
+        ts: snap.ts,
+        jitterMs: snap.jitterMs,
+        rttMs: snap.rttMs,
+        lossPct: snap.lossPct,
+        bitrateKbps: snap.bitrateKbps,
+      });
+      io.to(`metrics:${xrId}`).emit('metrics_update', {
+        xrId,
+        quality: [qualityHist.get(xrId).at(-1)]
+      });
+
+      // existing broadcast (summary tiles)
+      io.emit('webrtc_quality_update', Array.from(qualityByDevice.values()));
+    } catch (e) {
+      dwarn('[QUALITY] store/broadcast failed:', e?.message || e);
+    }
+  });
+
+
+
+
   // -------- message_history (on demand) --------
   socket.on('message_history', () => {
     dlog('[EVENT] message_history request');
@@ -709,6 +1187,34 @@ io.on('connection', (socket) => {
     }
   });
 
+  // // Final cleanup and presence broadcast
+  // socket.on('disconnect', async (reason) => {
+  //   dlog('❎ [EVENT] disconnect', {
+  //     reason,
+  //     xrId: socket.data?.xrId,
+  //     device: socket.data?.deviceName
+  //   });
+
+  //   try {
+  //     const xrId = socket.data?.xrId;
+  //     if (xrId) {
+  //       // Remove from your in-memory maps
+  //       clients.delete(xrId);
+  //       onlineDevices.delete(xrId);
+
+  //       if (desktopClients.get(xrId) === socket) {
+  //         desktopClients.delete(xrId);
+  //         dlog('[disconnect] removed desktop client:', xrId);
+  //       }
+  //     }
+
+  //     // Broadcast device list so UIs update without manual refresh
+  //     await broadcastDeviceList();
+  //   } catch (err) {
+  //     derr('[disconnect] cleanup error:', err.message);
+  //   }
+  // });
+
   // Final cleanup and presence broadcast
   socket.on('disconnect', async (reason) => {
     dlog('❎ [EVENT] disconnect', {
@@ -732,10 +1238,18 @@ io.on('connection', (socket) => {
 
       // Broadcast device list so UIs update without manual refresh
       await broadcastDeviceList();
+
+      // ✅ NEW: after Socket.IO has pruned rooms, reflect pair changes
+      setTimeout(() => {
+        broadcastPairs();
+      }, 0);
+
     } catch (err) {
       derr('[disconnect] cleanup error:', err.message);
     }
   });
+
+
 
 
 
