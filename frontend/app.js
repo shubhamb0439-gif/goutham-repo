@@ -1,6 +1,6 @@
-// --------------------------------------------------App.js ----------------duplicate id working version ----29-08-25------------------------------------
+// --------------------------------------------------App.js ----------------mirror camera setting ----01-09-25------------------------------------
 
-// --------------------------------------------16:6--------------23-09-25 --------------dashbaord and cockpit working verison============================
+
 console.log('[INIT] Initializing DOM elements');
 const videoElement = document.getElementById('xrVideo');
 const statusElement = document.getElementById('status');
@@ -45,83 +45,6 @@ let heartbeatInterval = null;
 let lastDeviceList = []; // remember last list we got
 let duplicateNotified = false; // notify once per session about duplicate tabs
 let duplicateLock = false; // 🔒 prevents reconnect loops once server says ID is in use
-
-
-// --- Desktop network telemetry (renderer) ---
-let dockTelTimer = null;
-
-// Map 0..100 -> 0..4 "bars"
-function barsFromPercent(pct) {
-  if (!Number.isFinite(pct)) return null;
-  return Math.max(0, Math.min(4, Math.round((pct / 100) * 4)));
-}
-
-// Collect network snapshot (works in browser/Electron renderer)
-// - Uses navigator.connection when available
-// - If a preload exposes systeminformation as window.si, we use that for better Wi-Fi info
-async function collectDockTelemetry() {
-  try {
-    // Prefer preload-provided "systeminformation" if available
-    if (window.si && typeof window.si.wifiConnections === 'function') {
-      try {
-        const wifi = await window.si.wifiConnections();
-        if (Array.isArray(wifi) && wifi.length) {
-          const w = wifi[0];
-          const bars = barsFromPercent(Number(w.signalLevel)); // 0..100 -> 0..4
-          return {
-            connType: 'wifi',
-            wifiDbm: null, // many OSes don't expose dBm cross-platform
-            wifiMbps: Number.isFinite(w.txRate) ? Math.round(w.txRate) : null,
-            wifiBars: bars,
-          };
-        }
-        // Fall back to generic interface list
-        if (typeof window.si.networkInterfaces === 'function') {
-          const nets = await window.si.networkInterfaces();
-          const active = nets.find(n => n.operstate === 'up');
-          if (active) {
-            if (active.type === 'wired') return { connType: 'ethernet' };
-            if (active.type === 'cellular') return { connType: 'cellular' };
-          }
-        }
-      } catch { /* ignore and fall through */ }
-    }
-
-    // Fallback: Network Information API (browser/Electron)
-    const nc = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-    if (nc) {
-      // nc.effectiveType: 'slow-2g' | '2g' | '3g' | '4g'
-      // nc.downlink: Mbps (approx)
-      const eff = (nc.effectiveType || '').toLowerCase();
-      const down = Number.isFinite(nc.downlink) ? Math.round(nc.downlink) : null;
-
-      // We can’t reliably tell Wi-Fi vs Ethernet in plain browser; treat as 'wifi' if downlink present
-      // If you want Ethernet label, change to 'other' here
-      const connType = eff ? 'wifi' : (down ? 'wifi' : 'other');
-
-      // No dBm in browsers; derive rough bars from downlink
-      let bars = null;
-      if (Number.isFinite(down)) {
-        if (down >= 100) bars = 4;
-        else if (down >= 30) bars = 3;
-        else if (down >= 10) bars = 2;
-        else if (down > 0) bars = 1;
-        else bars = 0;
-      }
-
-      return {
-        connType,
-        wifiDbm: null,
-        wifiMbps: down,
-        wifiBars: bars,
-      };
-    }
-
-    return { connType: 'other' };
-  } catch {
-    return { connType: 'other' };
-  }
-}
 
 
 
@@ -191,9 +114,9 @@ const CLEAR_KEY = 'XR_CLEAR_ON_NEXT_CONNECT'; // '1' => wipe on next connect
 // ---------------- CONFIG ----------------
 console.log('[CONFIG] Loading configuration');
 // Update to your server URL as needed:
-const SERVER_URL = 'https://153ea94c123a.ngrok-free.app';  
+//  const SERVER_URL = 'https://bd478a8bc9f4.ngrok-free.app';
 
-// const SERVER_URL = 'https://xr-messaging-geexbheshbghhab7.centralindia-01.azurewebsites.net';
+ const SERVER_URL = 'https://xr-messaging-geexbheshbghhab7.centralindia-01.azurewebsites.net';
 
 /* ------------- XR_ID / NAME init (updated) ------------- */
 // XR ID is editable from the front-end before connecting
@@ -451,31 +374,6 @@ function initSocket() {
       if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
       startHeartbeat();
       announcePresence('connected');
-
-      // 🔵 Start desktop network telemetry (every ~12s)
-      if (dockTelTimer) clearInterval(dockTelTimer);
-      dockTelTimer = setInterval(async () => {
-        const snap = await collectDockTelemetry();
-        const payload = { xrId: XR_ID, ...snap, ts: Date.now() };
-        try { socket.emit('telemetry', payload); } catch { }
-      }, 12_000);
-
-      // Push one immediately on connect (nice for first render)
-      (async () => {
-        const snap = await collectDockTelemetry();
-        const payload = { xrId: XR_ID, ...snap, ts: Date.now() };
-        try { socket.emit('telemetry', payload); } catch { }
-      })();
-
-      const nc = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-      if (nc && typeof nc.addEventListener === 'function') {
-        try {
-          nc.addEventListener('change', async () => {
-            const snap = await collectDockTelemetry();
-            socket?.emit('telemetry', { xrId: XR_ID, ...snap, ts: Date.now() });
-          });
-        } catch { }
-      }
     }, 250);
   });
 
@@ -520,10 +418,6 @@ function initSocket() {
     // do not clear AUTO_KEY; preserves refresh auto-connect if enabled
     updateDeviceList(lastDeviceList);
     announcePresence('idle');
-
-
-    // 🔴 stop desktop telemetry loop
-    if (dockTelTimer) { clearInterval(dockTelTimer); dockTelTimer = null; }
   });
 
   socket.on('error', (data) => {
@@ -664,7 +558,7 @@ window.addEventListener('beforeunload', () => {
   }
 });
 
-// // ---------------- WebRTC & Messaging ----------------
+// ---------------- WebRTC & Messaging ----------------
 
 // function handleSignalMessage(data) {
 //   const type = data?.type;
@@ -743,8 +637,7 @@ window.addEventListener('beforeunload', () => {
 //     default:
 //       console.log('[WEBRTC] Unhandled signal type:', type);
 //   }
-// } 
-
+// }
 // ---------- Persistent BroadcastChannels ----------
 const transcriptBC = new BroadcastChannel('scribe-transcript');
 const soapBC = new BroadcastChannel('scribe-soap-note');
@@ -886,127 +779,21 @@ function createPeerConnection() {
   const pc = new RTCPeerConnection({ iceServers, iceTransportPolicy: 'all' });
   console.log('[WEBRTC] Peer connection created with ICE servers:', iceServers);
 
-  // 🔽 INSERT THIS FLAG (scoped to this call)
-  let qualityStarted = false;
-
-  if (typeof window.startWebRtcQualityMonitor !== 'function') {
-    console.warn('[QUALITY] webrtc-quality.js not loaded (startWebRtcQualityMonitor missing)');
-  }
-
-
-  // pc.ontrack = (event) => {
-  //   console.log('[WEBRTC] Received track:', event.track.kind);
-  //   if (!remoteStream) {
-  //     console.log('[WEBRTC] Creating new remote stream');
-  //     remoteStream = new MediaStream();
-  //     videoElement.srcObject = remoteStream;
-  //     videoElement.muted = true;
-
-  //     // Mirror by default (front camera use-case)
-  //     setMirror(true);
-  //   }
-  //   if (!remoteStream.getTracks().some((t) => t.id === event.track.id)) {
-  //     console.log('[WEBRTC] Adding track to remote stream');
-  //     remoteStream.addTrack(event.track);
-  //   }
-
-  //   // Start monitor here too (first time we see a remote track)
-  //   if (!qualityStarted) {
-  //     qualityStarted = true;
-  //     console.log('[QUALITY] starting monitor (ontrack)…');
-  //     if (window.__stopQuality) { try { window.__stopQuality(); } catch { } }
-  //     window.__stopQuality = window.startWebRtcQualityMonitor(pc, {
-  //       intervalMs: 3000,
-  //       onSample: (s) => {
-  //         console.log('[QUALITY] sample', s);
-  //         try {
-  //           (window.socket || socket)?.emit('webrtc_quality', {
-  //             xrId: XR_ID,               // Desktop id, e.g., 'XR-1238'
-  //             ts: Date.now(),
-  //             jitterMs: s.jitterMs,
-  //             lossPct: s.lossPct,
-  //             rttMs: s.rttMs,
-  //             fps: s.fps,
-  //             dropped: s.dropped,
-  //             nackCount: s.nackCount
-  //           });
-  //         } catch { }
-  //       }
-
-
-  //     });
-  //   }
-
-  //   videoElement.play().catch((e) => {
-  //     if (e && e.name === 'AbortError') {
-  //       console.debug('[WEBRTC] play() aborted (teardown race) — safe to ignore');
-  //     } else {
-  //       console.warn('[WEBRTC] Video play error:', e);
-  //       showClickToPlayOverlay();
-  //     }
-  //   });
-  // };
-
-
-  // Start WebRTC quality sampling as soon as we get the first remote track
   pc.ontrack = (event) => {
     console.log('[WEBRTC] Received track:', event.track.kind);
-
     if (!remoteStream) {
       console.log('[WEBRTC] Creating new remote stream');
       remoteStream = new MediaStream();
       videoElement.srcObject = remoteStream;
       videoElement.muted = true;
-      setMirror(true); // mirror for front-cam view
-    }
 
-    if (!remoteStream.getTracks().some(t => t.id === event.track.id)) {
+      // Mirror by default (front camera use-case)
+      setMirror(true);
+    }
+    if (!remoteStream.getTracks().some((t) => t.id === event.track.id)) {
       console.log('[WEBRTC] Adding track to remote stream');
       remoteStream.addTrack(event.track);
     }
-
-    // Start the monitor the first time we see a remote track
-    if (!qualityStarted) {
-      qualityStarted = true;
-      console.log('[QUALITY] starting monitor (ontrack)…');
-
-      if (window.__stopQuality) { try { window.__stopQuality(); } catch { } }
-      window.__stopQuality = window.startWebRtcQualityMonitor(pc, {
-        intervalMs: 3000, // sample every ~3s
-        onSample: (s) => {
-          console.log('[QUALITY] sample', s);
-
-          // 1) Existing small “Connection” tiles (dashboard summary)
-          try {
-            (window.socket || socket)?.emit('webrtc_quality', {
-              xrId: XR_ID,          // desktop id (XR-1238)
-              ts: Date.now(),
-              jitterMs: s.jitterMs,
-              lossPct: s.lossPct,
-              rttMs: s.rttMs,
-              bitrateKbps: s.bitrateKbps ?? null,
-              fps: s.fps,
-              dropped: s.dropped,
-              nackCount: s.nackCount
-            });
-          } catch { }
-
-          // 2) NEW: feed the time-series modal charts for the Android peer
-          try {
-            (window.socket || socket)?.emit('quality_stats', {
-              xrId: currentPeerId(),            // e.g. 'XR-1234' (the device you click)
-              ts: Date.now(),
-              jitterMs: s.jitterMs ?? null,
-              rttMs: s.rttMs ?? null,
-              lossPct: s.lossPct ?? null,
-              // include if your monitor returns it (some versions do)
-              bitrateKbps: s.bitrateKbps ?? null,
-            });
-          } catch { }
-        }
-      });
-    }
-
     videoElement.play().catch((e) => {
       if (e && e.name === 'AbortError') {
         console.debug('[WEBRTC] play() aborted (teardown race) — safe to ignore');
@@ -1016,7 +803,6 @@ function createPeerConnection() {
       }
     });
   };
-
 
 
   pc.onicecandidate = (event) => {
@@ -1042,136 +828,16 @@ function createPeerConnection() {
     }
   };
 
-  // pc.onconnectionstatechange = () => {
-  //   console.log('[WEBRTC] Connection state changed:', pc.connectionState);
-  //   if (pc.connectionState === 'connected') {
-  //     setStatus('Connected');
-  //   } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-  //     console.log('[WEBRTC] Connection failed or disconnected - stopping stream');
-  //     stopStream();
-  //     setStatus('Connecting');
-  //   }
-  // };
-
-  // pc.onconnectionstatechange = () => {
-  //   console.log('[WEBRTC] Connection state changed:', pc.connectionState);
-
-  //   if (pc.connectionState === 'connected') {
-  //     setStatus('Connected');
-
-  //     // ✅ Start monitor once, after we’re actually connected
-  //     if (!qualityStarted) {
-  //       qualityStarted = true;
-  //       console.log('[QUALITY] starting monitor…');
-
-  //       if (window.__stopQuality) { try { window.__stopQuality(); } catch { } }
-  //       window.__stopQuality = window.startWebRtcQualityMonitor(pc, {
-  //         intervalMs: 3000,
-  //         onSample: (s) => {
-  //           console.log('[QUALITY] sample', s); // DEBUG: verify we’re sampling every ~3s
-  //           // optional debug so you can see samples in DevTools
-  //           console.log('[QUALITY] sample', s);
-
-  //           try {
-  //             const id = typeof XR_ID !== 'undefined' ? XR_ID : 'XR-1238';
-  //             (window.socket || socket)?.emit('webrtc_quality', {
-  //               xrId: id,
-  //               ts: Date.now(),
-  //               jitterMs: s.jitterMs,
-  //               lossPct: s.lossPct,
-  //               rttMs: s.rttMs,
-  //               fps: s.fps,
-  //               dropped: s.dropped,
-  //               nackCount: s.nackCount
-  //             });
-  //           } catch { }
-  //         }
-  //       });
-  //     }
-
-  //   } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-  //     console.log('[WEBRTC] Connection failed or disconnected - stopping stream');
-
-  //     // 🛑 Stop the monitor when leaving connected
-  //     if (window.__stopQuality) {
-  //       try { window.__stopQuality(); } catch { }
-  //       window.__stopQuality = null;
-  //     }
-  //     qualityStarted = false;
-
-  //     stopStream();
-  //     setStatus('Connecting');
-  //   }
-  // };
-
   pc.onconnectionstatechange = () => {
     console.log('[WEBRTC] Connection state changed:', pc.connectionState);
-
     if (pc.connectionState === 'connected') {
       setStatus('Connected');
-
-      // Start the quality monitor once per session
-      if (!qualityStarted) {
-        qualityStarted = true;
-        console.log('[QUALITY] starting monitor…');
-
-        // stop any previous sampler defensively
-        if (window.__stopQuality) { try { window.__stopQuality(); } catch { } }
-
-        window.__stopQuality = window.startWebRtcQualityMonitor(pc, {
-          intervalMs: 3000, // sample every ~3s
-          onSample: (s) => {
-            // 1) Existing dashboard summary (small Jitter/Loss/RTT tiles)
-            try {
-              const id = (typeof XR_ID !== 'undefined' && XR_ID) ? XR_ID : 'XR-1238';
-              (window.socket || socket)?.emit('webrtc_quality', {
-                xrId: id,
-                ts: Date.now(),
-                jitterMs: s.jitterMs,
-                lossPct: s.lossPct,
-                rttMs: s.rttMs,
-                bitrateKbps: s.bitrateKbps ?? null,
-                fps: s.fps,
-                dropped: s.dropped,
-                nackCount: s.nackCount
-              });
-            } catch { }
-
-            // 2) NEW: time-series modal (battery/net/bitrate/jitter/rtt/loss)
-            try {
-              (window.socket || socket)?.emit('quality_stats', {
-                xrId: currentPeerId(),           // e.g. 'XR-1234' (the device you click)
-                ts: Date.now(),
-                jitterMs: s.jitterMs ?? null,
-                rttMs: s.rttMs ?? null,
-                lossPct: s.lossPct ?? null,
-                // include if your monitor exposes it; otherwise fine to be null
-                bitrateKbps: s.bitrateKbps ?? null,
-              });
-            } catch { }
-          }
-        });
-      }
-
     } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
       console.log('[WEBRTC] Connection failed or disconnected - stopping stream');
-
-      // Stop the quality monitor when leaving connected
-      if (window.__stopQuality) {
-        try { window.__stopQuality(); } catch { }
-        window.__stopQuality = null;
-      }
-      qualityStarted = false;
-
       stopStream();
       setStatus('Connecting');
     }
   };
-
-
-
-
-
 
   isStreamActive = true;
   return pc;
@@ -1290,12 +956,6 @@ function stopStream() {
   }
 
   pendingIceCandidates = [];
-
-  // ✅ Stop quality monitor
-  if (window.__stopQuality) {
-    try { window.__stopQuality(); } catch { }
-    window.__stopQuality = null;
-  }
   console.log('[STREAM] Stream stopped completely');
 }
 
