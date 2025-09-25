@@ -35,7 +35,7 @@ const LS_KEYS = {
   ACTIVE_ITEM_ID: 'scribe.activeItem', // Which transcript item the SOAP corresponds to
 };
 
-const NGROK_URL = 'https://bd478a8bc9f4.ngrok-free.app';
+const NGROK_URL = 'https://9b7f761efa3b.ngrok-free.app';
 const AZURE_URL = 'https://xr-messaging-geexbheshbghhab7.centralindia-01.azurewebsites.net';
 const OVERRIDES = Array.isArray(window.SCRIBE_PUBLIC_ENDPOINTS) ? window.SCRIBE_PUBLIC_ENDPOINTS : null;
 
