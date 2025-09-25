@@ -618,11 +618,13 @@ io.on('connection', (socket) => {
         derr('[join] broadcast err:', e.message);
       }
     })();
-  });
 
    // ✅ Give this newly joined socket the current pairing snapshot===============25-09-25
   emitRoomSnapshot(socket);
-});
+
+  });
+
+   
 
 
 
