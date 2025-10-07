@@ -1,24 +1,41 @@
-// -------------------------------------------------- scribe-cockpit-updated.js --------------------------------------------------
-// Full scribe cockpit with per-textbox human insert-only edit tracking vs AI baseline
-// - Tracks AI baseline (original text) when SOAP is generated
-// - Per box shows "Edits: N" (only insertions vs AI baseline)
-//   • Deleting previously-added text reduces N
-//   • Deleting AI baseline text does NOT increase N
-// - "Total Edits" is rendered on the FIRST/EXISTING "SOAP Note" heading (right side, same line)
-// - No duplicate (second) "SOAP Note" heading is added by this script
-// - Persistent 1rem spacing at end of transcript pane (left), across refresh/resizes
-// - "Add EHR" stays disabled (red) always; "Just Save" is green
-// - Clear / Just Save / Add EHR reset counters to 0
+// -------------------------------------------------- scribe-cockpit.js --------------------------------------------------
+// Scribe cockpit with precise, persistent per-textbox edit tracking vs AI baseline,
+// and device-based status pill logic.
+//
+// INCREMENTAL, PERSISTENT EDIT LOGIC
+// - On every input, we diff PREV -> NOW (insert/delete only via LCS).
+// - Insertions: +N (new chars tagged 'U' = user).
+// - Deletions of 'B' (baseline/AI chars): +N.
+// - Deletions of 'U' (user-added chars): -N (refund).
+// - Substitutions = delete + insert at the caret (counts both).
+// - Edits accumulate and are saved in localStorage per section.
+// - Provenance (char tags) is stored as RLE of 'B'/'U' and restored after refresh.
+//
+// DEVICE STATUS PILL LOGIC
+// - 2 or more devices online: "Connected" (green)
+// - Exactly 1 device online: "Connecting" (yellow)
+// - 0 devices: "Disconnected" (red)
+//
+// Workflow/UI preserved:
+// - Global "Total Edits" badge on first SOAP heading.
+// - "Add To EHR" always disabled (red).
+// - Clear / Save / Add EHR zero visible counters and REBASE provenance to current text (all 'B').
 
-console.log('[SCRIBE] Booting Scribe Cockpit (updated: single heading, total edits on first heading, larger buttons)');
+console.log('[SCRIBE] Booting Scribe Cockpit (incremental + persistent edit tracking + device-aware status)');
 
 // ==========================
-// DOM Elements (safe grabs)
+// DOM elements
 // ==========================
-const statusPill = document.getElementById('statusPill');
-const deviceListEl = document.getElementById('deviceList');
-const transcriptEl = document.getElementById('liveTranscript');
-let soapHost = document.getElementById('soapNotePanel');
+const statusPill     = document.getElementById('statusPill');
+const deviceListEl   = document.getElementById('deviceList');
+const transcriptEl   = document.getElementById('liveTranscript');
+let   soapHost       = document.getElementById('soapNotePanel');
+
+// Action buttons live in HTML (per your structure)
+const clearBtnEl     = document.getElementById('_scribe_clear');
+const saveBtnEl      = document.getElementById('_scribe_save');
+const addEhrBtnEl    = document.getElementById('_scribe_add_ehr');
+
 if (!soapHost) {
   console.warn('[SCRIBE] soapNotePanel not found, creating dynamically');
   soapHost = document.createElement('div');
@@ -38,89 +55,57 @@ const LS_KEYS = {
   ACTIVE_ITEM_ID: 'scribe.activeItem',
 };
 
-const NGROK_URL = 'https://52846d7be156.ngrok-free.app';
+// Endpoints (can override via window.SCRIBE_PUBLIC_ENDPOINTS)
+const NGROK_URL =  'https://6c04e2296074.ngrok-free.app';
 const AZURE_URL = 'https://xr-messaging-geexbheshbghhab7.centralindia-01.azurewebsites.net';
 const OVERRIDES = Array.isArray(window.SCRIBE_PUBLIC_ENDPOINTS) ? window.SCRIBE_PUBLIC_ENDPOINTS : null;
 
 const NGROK = (OVERRIDES?.[0] || NGROK_URL).replace(/\/$/, '');
-const AZURE = (OVERRIDES?.[1] || AZURE_URL).replace(/\/$/, '');
-const host = location.hostname;
+const AZURE  = (OVERRIDES?.[1] || AZURE_URL).replace(/\/$/, '');
+const host   = location.hostname;
 const isLocal = location.protocol === 'file:' || host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local') ||
   /^192\.168\./.test(host) || /^10\./.test(host) || /^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
 const preferred = isLocal ? NGROK : AZURE;
-const fallback = isLocal ? AZURE : NGROK;
+const fallback  = isLocal ? AZURE : NGROK;
 
 let SERVER_URL = null;
-let socket = null;
+let socket     = null;
 
-// In-memory state
-let latestSoapNote = {};                   // last received/edited SOAP
-const transcriptState = { byKey: {} };     // incremental transcript merging
+// In-memory UI state
+let latestSoapNote = {};                   // last received/edited SOAP payload
+const transcriptState = { byKey: {} };     // merges partial transcript chunks per (from->to)
 let soapNoteTimer = null;
 let soapNoteStartTime = null;
-let forceNoDevices = true;
 let currentActiveItemId = null;
-let soapGenerating = false;                // prevents editor render during generation
+let soapGenerating = false;
 
-// A reference to the single global "Total Edits" badge (rendered on the first heading)
+// Global "Total Edits" badge node
 let totalEditsBadgeEl = null;
 
+// Per-textarea incremental state (provenance + counters), kept at runtime;
+// persisted into latestSoapNote._editMeta on every change.
+const editStateMap = new WeakMap();
+/*
+  For each <textarea>:
+  {
+    ann: Array<{ch: string, tag: 'B'|'U'}>,   // current annotated text
+    ins: number,                               // cumulative +insertions; deleting 'U' refunds (decreases)
+    del: number                                // cumulative +deletions of baseline 'B'
+  }
+*/
+
 // ==========================
-// BroadcastChannels
+// BroadcastChannels (optional multi-tab sync)
 // ==========================
 const transcriptBC = new BroadcastChannel('scribe-transcript');
-const soapBC = new BroadcastChannel('scribe-soap-note');
-
-// ==========================
-// Styles for cards & SOAP
-// ==========================
-injectStyle(`
-  .scribe-card{ position:relative;background:#1f2937;padding:12px;border-radius:10px;margin-bottom:10px; transition:background .15s ease;cursor:pointer }
-  .scribe-card:hover{background:#222b3a}
-  .scribe-card-active{outline:2px solid #2563eb;background:#243041}
-  .scribe-delete{ position:absolute;top:8px;right:8px;color:#ef4444;font-size:16px;line-height:1;background:transparent;border:0;cursor:pointer }
-  .scribe-delete:hover{transform:scale(1.1)}
-  .scribe-soap-scroll{height:100%;overflow-y:auto;padding:12px}
-  .scribe-section{background:#1f2937;padding:12px;border-radius:10px;margin-bottom:10px}
-  .scribe-section-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
-  .scribe-section h3{font-size:14px;font-weight:600;margin:0;color:#fff}
-  .scribe-section .scribe-section-meta{font-size:13px;color:#a7f3d0;font-weight:600;margin-left:12px}
-  .scribe-textarea{width:100%;background:#0f172a;color:#fff;padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,.06);resize:none;min-height:60px;outline:none}
-  .scribe-soap-actions{ position:sticky;bottom:0;z-index:2;padding:10px;display:flex;gap:8px;justify-content:flex-end;
-    background:linear-gradient(180deg,rgba(11,15,25,0),rgba(11,15,25,.85) 30%,rgba(11,15,25,1) 60%); margin:-12px;margin-top:6px;padding-top:16px }
-  /* Buttons: make a bit longer / standard */
-  .scribe-btn{padding:10px 18px;border-radius:10px;border:0;color:#fff;cursor:pointer;min-width:120px;font-weight:600}
-  .scribe-btn-primary{background:#16a34a}.scribe-btn-primary:hover{background:#15803d} /* green for "Just Save" */
-  .scribe-btn-ghost{background:#374151}.scribe-btn-ghost:hover{background:#4b5563}
-  .scribe-add-ehr-disabled{background:#7f1d1d;color:#fff;opacity:0.95;cursor:not-allowed} /* always disabled & red */
-
-  /* The single global Total Edits badge on the FIRST heading */
-  ._scribe_total_edits{font-size:13px;color:#10b981;font-weight:700;margin-left:auto}
-
-  /* Provide flex layout to the existing heading so badge sits on the right on the same line */
-  .scribe-heading-flex{display:flex;align-items:center;gap:.75rem}
-  .scribe-heading-flex > ._scribe_total_edits{margin-left:auto}
-
-  /* Persistent 1rem space at the END of transcript pane (left) */
-  #liveTranscript{ padding-bottom:1rem; }
-  #liveTranscript .scribe-card:last-child{ margin-bottom:1rem; }
-`);
-
-// helper to inject CSS
-function injectStyle(css){
-  const s = document.createElement('style');
-  s.textContent = css;
-  document.head.appendChild(s);
-}
+const soapBC       = new BroadcastChannel('scribe-soap-note');
 
 // ==========================
 // localStorage helpers
 // ==========================
 function lsSafeParse(key, fallback){
-  try{
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  }catch{ return fallback; }
+  try{ const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; }
+  catch { return fallback; }
 }
 function saveHistory(arr){ localStorage.setItem(LS_KEYS.HISTORY, JSON.stringify(arr||[])); }
 function loadHistory(){ return lsSafeParse(LS_KEYS.HISTORY, []); }
@@ -131,7 +116,7 @@ function loadActiveItemId(){ return localStorage.getItem(LS_KEYS.ACTIVE_ITEM_ID)
 function uid(){ return Math.random().toString(36).slice(2) + Date.now().toString(36); }
 
 // ==========================
-// Status pillar
+// Status pill
 // ==========================
 function setStatus(status){
   if(!statusPill) return;
@@ -139,24 +124,34 @@ function setStatus(status){
   statusPill.setAttribute('aria-label', `Connection status: ${status}`);
   statusPill.classList.remove('bg-yellow-500','bg-green-500','bg-red-600');
   switch((status||'').toLowerCase()){
-    case 'connected': statusPill.classList.add('bg-green-500'); break;
-    case 'disconnected': statusPill.classList.add('bg-red-600'); break;
-    default: statusPill.classList.add('bg-yellow-500');
+    case 'connected':     statusPill.classList.add('bg-green-500'); break;
+    case 'disconnected':  statusPill.classList.add('bg-red-600');   break;
+    default:              statusPill.classList.add('bg-yellow-500'); // 'connecting' or anything else
   }
 }
 
 // ==========================
-// Devices
+// Devices list + device-aware status
 // ==========================
 function showNoDevices(){
   if(!deviceListEl) return;
   deviceListEl.innerHTML = '';
   const li = document.createElement('li');
-  li.className = 'text-gray-400'; li.textContent = 'No devices online';
+  li.className = 'text-gray-400';
+  li.textContent = 'No devices online';
   deviceListEl.appendChild(li);
 }
+
+/**
+ * Update the device list UI and set the status pill strictly by device count:
+ * - 2+ devices  -> Connected (green)
+ * - 1 device    -> Connecting (yellow)
+ * - 0 devices   -> Disconnected (red)
+ */
 function updateDeviceList(devices){
-  if(!Array.isArray(devices)) return;
+  if(!Array.isArray(devices)) devices = [];
+
+  // Render the list
   deviceListEl.innerHTML = '';
   devices.forEach(d=>{
     const name = d.deviceName || d.name || (d.xrId ? `Device (${d.xrId})` : 'Unknown');
@@ -166,12 +161,18 @@ function updateDeviceList(devices){
     deviceListEl.appendChild(li);
   });
   if(devices.length === 0) showNoDevices();
+
+  // Set status by count
+  if (devices.length >= 2) setStatus('Connected');
+  else if (devices.length === 1) setStatus('Connecting');
+  else setStatus('Disconnected');
 }
 
 // ==========================
 // Transcript helpers
 // ==========================
 function transcriptKey(from,to){ return `${from||'unknown'}->${to||'unknown'}`; }
+
 function mergeIncremental(prev,next){
   if(!prev) return next||'';
   if(!next) return prev;
@@ -181,11 +182,13 @@ function mergeIncremental(prev,next){
   while(k>0 && !prev.endsWith(next.slice(0,k))) k--;
   return prev + next.slice(k);
 }
+
 function ensureTranscriptPlaceholder(){
   if(!transcriptEl) return;
   if(!document.getElementById(PLACEHOLDER_ID)){
     const ph = document.createElement('p');
-    ph.id = PLACEHOLDER_ID; ph.className = 'text-gray-400 italic';
+    ph.id = PLACEHOLDER_ID;
+    ph.className = 'text-gray-400 italic';
     ph.textContent = 'No transcript yet…';
     transcriptEl.appendChild(ph);
   }
@@ -195,13 +198,11 @@ function removeTranscriptPlaceholder(){
   if(ph && ph.parentNode) ph.parentNode.removeChild(ph);
 }
 
-// ==========================
-// Transcript UI (card, select, delete)
-// ==========================
 function createTranscriptCard(item){
   const {id,from,to,text,timestamp} = item;
   const card = document.createElement('div');
-  card.className = 'scribe-card'; card.dataset.id = id;
+  card.className = 'scribe-card';
+  card.dataset.id = id;
 
   const header = document.createElement('div');
   header.className = 'text-sm mb-1';
@@ -218,7 +219,8 @@ function createTranscriptCard(item){
 
   const del = document.createElement('button');
   del.setAttribute('data-action','delete');
-  del.className = 'scribe-delete'; del.title = 'Delete this transcript & linked SOAP';
+  del.className = 'scribe-delete';
+  del.title = 'Delete this transcript & linked SOAP';
   del.innerHTML = '🗑️';
   del.addEventListener('click', (e)=>{ e.stopPropagation(); deleteTranscriptItem(id); });
   card.appendChild(del);
@@ -233,6 +235,7 @@ function createTranscriptCard(item){
   if(id === loadActiveItemId()) card.classList.add('scribe-card-active');
   return card;
 }
+
 function applyClamp(el,collapse=true){
   if(collapse){
     el.dataset.collapsed='true';
@@ -250,19 +253,24 @@ function applyClamp(el,collapse=true){
     el.style.maxHeight='none';
   }
 }
+
 function highlightActiveCard(){
   transcriptEl.querySelectorAll('.scribe-card').forEach(c=>c.classList.remove('scribe-card-active'));
   const active = transcriptEl.querySelector(`.scribe-card[data-id="${CSS.escape(loadActiveItemId())}"]`);
   if(active) active.classList.add('scribe-card-active');
 }
+
 function setActiveTranscriptId(id){
-  currentActiveItemId = id; saveActiveItemId(id); highlightActiveCard();
+  currentActiveItemId = id;
+  saveActiveItemId(id);
+  highlightActiveCard();
   const hist = loadHistory();
   const item = hist.find(x=>x.id === id);
   const soap = item?.soap || {};
   latestSoapNote = Object.keys(soap).length ? soap : loadLatestSoap();
   if(!soapGenerating) renderSoapNote(latestSoapNote);
 }
+
 function trimTranscriptIfNeeded(){
   const cards = transcriptEl.querySelectorAll('.scribe-card');
   if(cards.length > MAX_TRANSCRIPT_LINES){
@@ -273,6 +281,7 @@ function trimTranscriptIfNeeded(){
     }
   }
 }
+
 function appendTranscriptItem({from,to,text,timestamp}){
   if(!transcriptEl || !text) return;
   removeTranscriptPlaceholder();
@@ -284,6 +293,7 @@ function appendTranscriptItem({from,to,text,timestamp}){
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
   setActiveTranscriptId(item.id);
 }
+
 function deleteTranscriptItem(id){
   const history = loadHistory(); const idx = history.findIndex(x=>x.id===id);
   if(idx === -1) return;
@@ -301,9 +311,8 @@ function deleteTranscriptItem(id){
   const activeId = loadActiveItemId();
   if(activeId === id){
     const newActive = history.length ? history[history.length-1].id : '';
-    if(newActive){
-      setActiveTranscriptId(newActive);
-    } else {
+    if(newActive) setActiveTranscriptId(newActive);
+    else {
       latestSoapNote = {}; saveLatestSoap(latestSoapNote); saveActiveItemId('');
       if(!soapGenerating) renderSoapBlank();
     }
@@ -313,60 +322,201 @@ function deleteTranscriptItem(id){
 }
 
 // ==========================
-// Edit math: insert-only distance vs AI baseline
-// editCount = |current| - LCS(current, aiText)
-// (counts only user insertions; deleting those insertions reduces count; deleting AI text doesn't add)
+// INCREMENTAL EDIT TRACKING (persistent)
 // ==========================
-function computeInsertOnlyEdits(aiText, current){
-  aiText = String(aiText||''); current = String(current||'');
-  if(current === aiText) return 0;
-  const MAX_CELLS = 800000;
-  const n = current.length, m = aiText.length;
-  if(n * m > MAX_CELLS){
-    let i=0, j=0;
-    while(i<n && j<m && current[i] === aiText[j]) { i++; j++; }
-    let ii=n-1, jj=m-1;
-    while(ii>=i && jj>=j && current[ii] === aiText[jj]) { ii--; jj--; }
-    const approxCommon = i + (n-1-ii > 0 && m-1-jj > 0 ? Math.min(n-1-ii, m-1-jj) : 0);
-    const lcsApprox = Math.min(approxCommon, Math.min(n,m));
-    return Math.max(0, n - lcsApprox);
+const MAX_DELTA_CELLS = 200000; // (n+1)*(m+1) guardrail
+
+// RLE encode/decode for provenance tags ('B'/'U')
+function rleEncodeTags(tags){
+  if(!tags || !tags.length) return [];
+  const out = [];
+  let last = tags[0], count = 1;
+  for(let i=1;i<tags.length;i++){
+    if(tags[i] === last) count++;
+    else { out.push([last, count]); last = tags[i]; count = 1; }
   }
-  const prev = new Uint16Array(m+1);
-  const curr = new Uint16Array(m+1);
-  for(let i=1;i<=n;i++){
-    for(let j=1;j<=m;j++){
-      if(current.charCodeAt(i-1) === aiText.charCodeAt(j-1)){
-        curr[j] = prev[j-1] + 1;
-      }else{
-        curr[j] = prev[j] > curr[j-1] ? prev[j] : curr[j-1];
+  out.push([last, count]);
+  return out;
+}
+function rleDecodeToTags(rle, targetLen){
+  if(!Array.isArray(rle) || rle.length === 0) return new Array(targetLen).fill('B');
+  const tags = [];
+  for(const [tag, cnt] of rle){
+    for(let i=0;i<cnt && tags.length<targetLen;i++) tags.push(tag === 'U' ? 'U' : 'B');
+    if(tags.length >= targetLen) break;
+  }
+  if(tags.length < targetLen) while(tags.length < targetLen) tags.push('B');
+  else if(tags.length > targetLen) tags.length = targetLen;
+  return tags;
+}
+
+function buildLcsTable(prevArr, nextArr){
+  const n = prevArr.length, m = nextArr.length;
+  const rows = n + 1, cols = m + 1;
+  const table = new Array(rows);
+  table[0] = new Uint16Array(cols);
+  for(let i=1;i<rows;i++){
+    const row = new Uint16Array(cols);
+    const pi = prevArr[i-1];
+    for(let j=1;j<cols;j++){
+      if(pi === nextArr[j-1]) row[j] = table[i-1][j-1] + 1;
+      else {
+        const a = table[i-1][j], b = row[j-1];
+        row[j] = a > b ? a : b;
       }
     }
-    prev.set(curr);
+    table[i] = row;
   }
-  const lcs = prev[m];
-  return Math.max(0, n - lcs);
+  return table;
+}
+
+function fastGreedyDelta(prevAnn, nextText, state){
+  const prevChars = prevAnn.map(x=>x.ch);
+  const nextChars = Array.from(nextText);
+
+  let p = 0;
+  while(p < prevChars.length && p < nextChars.length && prevChars[p] === nextChars[p]) p++;
+
+  let s = 0;
+  while(s < prevChars.length - p && s < nextChars.length - p &&
+        prevChars[prevChars.length - 1 - s] === nextChars[nextChars.length - 1 - s]) s++;
+
+  for(let i = p; i < prevChars.length - s; i++){
+    const removed = prevAnn[i];
+    if(removed.tag === 'U') state.ins = Math.max(0, state.ins - 1);
+    else state.del += 1;
+  }
+
+  const inserted = [];
+  for(let j = p; j < nextChars.length - s; j++){
+    inserted.push({ ch: nextChars[j], tag: 'U' });
+    state.ins += 1;
+  }
+
+  const prefix = prevAnn.slice(0, p);
+  const suffix = prevAnn.slice(prevChars.length - s);
+  return [...prefix, ...inserted, ...suffix];
+}
+
+function exactDeltaViaLcs(prevAnn, nextText, state){
+  const prevChars = prevAnn.map(x=>x.ch);
+  const nextChars = Array.from(nextText);
+  const table = buildLcsTable(prevChars, nextChars);
+
+  let i = prevChars.length, j = nextChars.length;
+  const newAnnRev = [];
+
+  while(i > 0 && j > 0){
+    if(prevChars[i-1] === nextChars[j-1]){
+      newAnnRev.push({ ch: nextChars[j-1], tag: prevAnn[i-1].tag });
+      i--; j--;
+    } else if (table[i-1][j] >= table[i][j-1]) {
+      const removed = prevAnn[i-1];
+      if(removed.tag === 'U') state.ins = Math.max(0, state.ins - 1);
+      else state.del += 1;
+      i--;
+    } else {
+      newAnnRev.push({ ch: nextChars[j-1], tag: 'U' });
+      state.ins += 1;
+      j--;
+    }
+  }
+  while(i > 0){
+    const removed = prevAnn[i-1];
+    if(removed.tag === 'U') state.ins = Math.max(0, state.ins - 1);
+    else state.del += 1;
+    i--;
+  }
+  while(j > 0){
+    newAnnRev.push({ ch: nextChars[j-1], tag: 'U' });
+    state.ins += 1;
+    j--;
+  }
+
+  newAnnRev.reverse();
+  return newAnnRev;
+}
+
+function applyIncrementalDiff(box, newText){
+  let state = editStateMap.get(box);
+  if(!state){
+    state = { ann: Array.from(newText).map(ch=>({ch, tag:'B'})), ins: 0, del: 0 };
+    editStateMap.set(box, state);
+    return 0;
+  }
+
+  const prevAnn = state.ann;
+  const n = prevAnn.length, m = newText.length;
+
+  let newAnn;
+  if( (n+1)*(m+1) > MAX_DELTA_CELLS ){
+    newAnn = fastGreedyDelta(prevAnn, newText, state);
+  } else {
+    newAnn = exactDeltaViaLcs(prevAnn, newText, state);
+  }
+
+  state.ann = newAnn;
+  const total = Math.max(0, state.ins) + Math.max(0, state.del);
+  return total;
+}
+
+// Persist/Restore per-section incremental state
+function persistSectionState(section, state){
+  latestSoapNote._editMeta = latestSoapNote._editMeta || {};
+  const tags = state.ann.map(x=>x.tag);
+  const provRLE = rleEncodeTags(tags);
+  const edits = Math.max(0, state.ins) + Math.max(0, state.del);
+  latestSoapNote._editMeta[section] = { edits, ins: state.ins, del: state.del, provRLE };
+  saveLatestSoap(latestSoapNote);
+}
+
+function restoreSectionState(section, contentText){
+  const meta = latestSoapNote?._editMeta?.[section];
+  if(!meta){
+    return { ann: Array.from(contentText).map(ch=>({ch, tag:'B'})), ins: 0, del: 0, edits: 0 };
+  }
+  const tags = rleDecodeToTags(meta.provRLE, contentText.length);
+  const ann  = Array.from(contentText).map((ch, i)=>({ ch, tag: (tags[i] === 'U' ? 'U' : 'B') }));
+  const ins  = Number.isFinite(meta.ins) ? meta.ins : 0;
+  const del  = Number.isFinite(meta.del) ? meta.del : 0;
+  const edits = Number.isFinite(meta.edits) ? meta.edits : Math.max(0, ins) + Math.max(0, del);
+  return { ann, ins, del, edits };
+}
+
+function rebaseBoxStateToCurrent(box){
+  const current = box.value || '';
+  const state = editStateMap.get(box) || { ann: [], ins: 0, del: 0 };
+  state.ann = Array.from(current).map(ch => ({ ch, tag: 'B' }));
+  state.ins = 0;
+  state.del = 0;
+  editStateMap.set(box, state);
+
+  const section = box.dataset.section;
+  persistSectionState(section, state);
 }
 
 // ==========================
-// SOAP Note rendering
+// SOAP note rendering
 // ==========================
 function soapContainerEnsure(){
-  let scroller = soapHost.querySelector('.scribe-soap-scroll');
+  let scroller = document.getElementById('soapScroller');
   if(!scroller){
     scroller = document.createElement('div');
+    scroller.id = 'soapScroller';
     scroller.className = 'scribe-soap-scroll scribe-scroll';
-    soapHost.innerHTML = '';
     soapHost.appendChild(scroller);
   }
   return scroller;
 }
 function renderSoapBlank(){
   const scroller = soapContainerEnsure();
-  scroller.innerHTML = ''; // blank per requirement
+  scroller.innerHTML = '';
 }
-function autoExpandTextarea(el){ el.style.height='auto'; el.style.height = el.scrollHeight + 'px'; }
+function autoExpandTextarea(el){
+  el.style.height='auto';
+  el.style.height = el.scrollHeight + 'px';
+}
 
-// Initialize AI meta (original AI text) and reset edit meta
 function initializeEditMetaForSoap(soap){
   soap._aiMeta = soap._aiMeta || {};
   soap._editMeta = soap._editMeta || {};
@@ -374,68 +524,59 @@ function initializeEditMetaForSoap(soap){
   sections.forEach(section=>{
     const val = soap?.[section] || '';
     const textBlock = Array.isArray(val) ? val.join('\n') : String(val||'');
-    soap._aiMeta[section] = { text: textBlock };
-    soap._editMeta[section] = { edits: 0 };
+    soap._aiMeta[section]   = { text: textBlock };
+    soap._editMeta[section] = {
+      edits: 0, ins: 0, del: 0,
+      provRLE: rleEncodeTags(new Array(textBlock.length).fill('B'))
+    };
   });
 }
 
-// Persist current textarea values back into latestSoapNote and history
 function persistSoapFromUI(){
   const scroller = soapContainerEnsure();
   const editors = scroller.querySelectorAll('textarea[data-section]');
   const soap = {};
-  editors.forEach(t=>{
-    soap[t.dataset.section] = t.value || '';
-  });
-  soap._aiMeta = (latestSoapNote && latestSoapNote._aiMeta) ? latestSoapNote._aiMeta : {};
+  editors.forEach(t=>{ soap[t.dataset.section] = t.value || ''; });
+
+  soap._aiMeta   = (latestSoapNote && latestSoapNote._aiMeta)  ? latestSoapNote._aiMeta  : {};
   soap._editMeta = latestSoapNote?._editMeta || {};
   latestSoapNote = soap;
   saveLatestSoap(latestSoapNote);
 
   const activeId = loadActiveItemId();
   if(activeId){
-    const hist = loadHistory(); const i = hist.findIndex(x=>x.id === activeId);
+    const hist = loadHistory();
+    const i = hist.findIndex(x=>x.id === activeId);
     if(i !== -1){ hist[i].soap = latestSoapNote; saveHistory(hist); }
   }
 }
 
-// === Single global Total Edits badge on FIRST heading ======================
-// We do NOT create our own "SOAP Note" heading. Instead, we augment the FIRST
-// existing "SOAP Note" heading in the page with a right-aligned badge.
 function ensureTopHeadingBadge(){
   if (totalEditsBadgeEl && document.body.contains(totalEditsBadgeEl)) return totalEditsBadgeEl;
 
-  // Try to find the first heading that says "SOAP Note"
   const candidates = Array.from(document.querySelectorAll('h1, h2, h3, [data-title]'));
   let heading = candidates.find(el => (el.textContent || '').trim().toLowerCase().startsWith('soap note'));
 
-  // As a fallback, if no explicit title element found, create a lightweight one above our panel.
   if (!heading) {
-    const fallbackWrap = document.createElement('div');
-    fallbackWrap.className = 'scribe-heading-flex';
+    const wrap = document.createElement('div');
+    wrap.className = 'scribe-heading-flex';
     const h = document.createElement('h2');
     h.textContent = 'SOAP Note';
-    fallbackWrap.appendChild(h);
-    // Insert right before our soapHost, so it becomes the first heading visually
-    soapHost.parentNode?.insertBefore(fallbackWrap, soapHost);
-    heading = fallbackWrap;
+    wrap.appendChild(h);
+    soapHost.parentNode?.insertBefore(wrap, soapHost);
+    heading = wrap;
   }
 
-  // Ensure the heading is flex so the badge floats to the right on the same line
   heading.classList.add('scribe-heading-flex');
 
-  // Create / attach the single badge
   totalEditsBadgeEl = document.createElement('div');
   totalEditsBadgeEl.id = '_scribe_total_edits';
   totalEditsBadgeEl.className = '_scribe_total_edits';
   totalEditsBadgeEl.textContent = 'Total Edits: 0';
-
-  // If heading is a plain H2, append badge into the same line
   heading.appendChild(totalEditsBadgeEl);
   return totalEditsBadgeEl;
 }
 
-// Update total edits and per-section badges
 function updateTotalsAndEhrState(){
   const scroller = soapContainerEnsure();
   const editors = scroller.querySelectorAll('textarea[data-section]');
@@ -444,51 +585,51 @@ function updateTotalsAndEhrState(){
     const m = t.dataset.editCount ? Number(t.dataset.editCount) : 0;
     total += m;
     const headMeta = scroller.querySelector(`.scribe-section[data-section="${CSS.escape(t.dataset.section)}"] .scribe-section-meta`);
-    if(headMeta){
-      headMeta.textContent = `Edits: ${m}`;
-    }
+    if(headMeta) headMeta.textContent = `Edits: ${m}`;
   });
 
-  // Update the SINGLE global badge on the first heading
   const badge = ensureTopHeadingBadge();
   if (badge) badge.textContent = `Total Edits: ${total}`;
 
-  // Keep Add EHR disabled & red ALWAYS
-  const addBtn = scroller.querySelector('#_scribe_add_ehr');
-  if(addBtn){
-    addBtn.disabled = true;
-    addBtn.className = 'scribe-btn scribe-add-ehr-disabled';
+  if(addEhrBtnEl){
+    addEhrBtnEl.disabled = true;
+    addEhrBtnEl.classList.add('scribe-add-ehr-disabled');
   }
 }
 
-// Reset visual counters to 0 (logic used by Clear / Just Save / Add EHR)
 function resetAllEditCountersToZero(){
   const scroller = soapContainerEnsure();
   const editors = scroller.querySelectorAll('textarea[data-section]');
   editors.forEach(textarea=>{
+    rebaseBoxStateToCurrent(textarea);
     textarea.dataset.editCount = '0';
     const headMeta = scroller.querySelector(`.scribe-section[data-section="${CSS.escape(textarea.dataset.section)}"] .scribe-section-meta`);
     if(headMeta) headMeta.textContent = `Edits: 0`;
   });
   if(latestSoapNote) latestSoapNote._editMeta = latestSoapNote._editMeta || {};
   Object.keys(latestSoapNote._aiMeta || {}).forEach(section => {
-    latestSoapNote._editMeta[section] = { edits: 0 };
+    latestSoapNote._editMeta[section] = latestSoapNote._editMeta[section] || {};
+    latestSoapNote._editMeta[section].edits = 0;
+    latestSoapNote._editMeta[section].ins   = 0;
+    latestSoapNote._editMeta[section].del   = 0;
   });
   saveLatestSoap(latestSoapNote);
   updateTotalsAndEhrState();
 }
 
-// Attach insert-only edit tracking to a textarea
 function attachEditTrackingToTextarea(box, aiText){
-  box.dataset.aiText = aiText || '';
-  const initialEdits = computeInsertOnlyEdits(aiText, box.value || '');
-  box.dataset.editCount = String(initialEdits);
+  const section = box.dataset.section;
+  const contentText = box.value || '';
+
+  const restored = restoreSectionState(section, contentText);
+  editStateMap.set(box, { ann: restored.ann, ins: restored.ins, del: restored.del });
+  box.dataset.editCount = String(restored.edits);
 
   const scroller = soapContainerEnsure();
-  const headMeta = scroller.querySelector(`.scribe-section[data-section="${CSS.escape(box.dataset.section)}"] .scribe-section-meta`);
-  if(headMeta){
-    headMeta.textContent = `Edits: ${initialEdits}`;
-  }
+  const headMeta = scroller.querySelector(`.scribe-section[data-section="${CSS.escape(section)}"] .scribe-section-meta`);
+  if(headMeta) headMeta.textContent = `Edits: ${restored.edits}`;
+
+  box.dataset.aiText = aiText || '';
 
   let rafId = null;
   box.addEventListener('input', ()=>{
@@ -496,17 +637,22 @@ function attachEditTrackingToTextarea(box, aiText){
     if(rafId) cancelAnimationFrame(rafId);
     rafId = requestAnimationFrame(()=>{
       try{
-        const ai = box.dataset.aiText || '';
         const now = box.value || '';
-        const edits = computeInsertOnlyEdits(ai, now);
-        box.dataset.editCount = String(edits);
+        const totalEdits = applyIncrementalDiff(box, now);
+        box.dataset.editCount = String(totalEdits);
+
+        const state = editStateMap.get(box);
+        persistSectionState(section, state);
+
         latestSoapNote = latestSoapNote || {};
         latestSoapNote._editMeta = latestSoapNote._editMeta || {};
-        latestSoapNote._editMeta[box.dataset.section] = { edits };
+        latestSoapNote._editMeta[section] = latestSoapNote._editMeta[section] || {};
+        latestSoapNote._editMeta[section].edits = totalEdits;
         saveLatestSoap(latestSoapNote);
 
-        const headMetaNow = scroller.querySelector(`.scribe-section[data-section="${CSS.escape(box.dataset.section)}"] .scribe-section-meta`);
-        if(headMetaNow) headMetaNow.textContent = `Edits: ${edits}`;
+        const headMetaNow = scroller.querySelector(`.scribe-section[data-section="${CSS.escape(section)}"] .scribe-section-meta`);
+        if(headMetaNow) headMetaNow.textContent = `Edits: ${totalEdits}`;
+
         updateTotalsAndEhrState();
         persistSoapFromUI();
       }catch(e){ console.warn('[SCRIBE] input handler error', e); }
@@ -515,13 +661,11 @@ function attachEditTrackingToTextarea(box, aiText){
   });
 }
 
-// Render the SOAP note with editors (NO second heading is created here)
 function renderSoapNote(soap){
   if(soapGenerating) return;
   const scroller = soapContainerEnsure();
   scroller.innerHTML = '';
 
-  // Ensure the single global badge exists on the FIRST heading
   ensureTopHeadingBadge();
 
   const sections = ['Chief Complaints','History of Present Illness','Subjective','Objective','Assessment','Plan','Medication'];
@@ -531,7 +675,7 @@ function renderSoapNote(soap){
   }
 
   latestSoapNote = latestSoapNote || soap || {};
-  latestSoapNote._aiMeta = latestSoapNote._aiMeta || (soap ? soap._aiMeta : {}) || {};
+  latestSoapNote._aiMeta   = latestSoapNote._aiMeta   || (soap ? soap._aiMeta   : {}) || {};
   latestSoapNote._editMeta = latestSoapNote._editMeta || (soap ? soap._editMeta : {}) || {};
 
   sections.forEach(section=>{
@@ -560,79 +704,26 @@ function renderSoapNote(soap){
 
     const rawVal = soap?.[section];
     const contentText = Array.isArray(rawVal) ? rawVal.join('\n') : (typeof rawVal === 'string' ? rawVal : '');
-
     box.value = contentText;
     autoExpandTextarea(box);
 
     const aiText = soap?._aiMeta?.[section]?.text ?? contentText;
-
     latestSoapNote._aiMeta[section] = latestSoapNote._aiMeta[section] || { text: aiText };
 
-    const initialEdits = computeInsertOnlyEdits(aiText, contentText);
-    latestSoapNote._editMeta[section] = { edits: initialEdits };
-    box.dataset.editCount = String(initialEdits);
+    attachEditTrackingToTextarea(box, aiText);
 
     wrap.appendChild(box);
     scroller.appendChild(wrap);
-
-    attachEditTrackingToTextarea(box, aiText);
   });
-
-  // Actions (Clear, Just Save, Add EHR[disabled])
-  const actions = document.createElement('div');
-  actions.className = 'scribe-soap-actions';
-
-  const clearBtn = document.createElement('button');
-  clearBtn.className = 'scribe-btn scribe-btn-ghost';
-  clearBtn.textContent = 'Clear';
-  clearBtn.onclick = ()=>{
-    scroller.querySelectorAll('textarea[data-section]').forEach(t=>{
-      t.value = '';
-      autoExpandTextarea(t);
-      t.dataset.editCount = '0';
-      const headMeta = scroller.querySelector(`.scribe-section[data-section="${CSS.escape(t.dataset.section)}"] .scribe-section-meta`);
-      if(headMeta) headMeta.textContent = `Edits: 0`;
-    });
-    persistSoapFromUI();
-    resetAllEditCountersToZero();
-    console.log('[SCRIBE] SOAP cleared and edit counters reset.');
-  };
-
-  const saveBtn = document.createElement('button');
-  saveBtn.className = 'scribe-btn scribe-btn-primary';
-  saveBtn.textContent = 'Save';
-  saveBtn.onclick = ()=>{
-    persistSoapFromUI();
-    resetAllEditCountersToZero();
-    console.log('[SCRIBE] SOAP saved and edit counters reset.');
-  };
-
-  const addEhrBtn = document.createElement('button');
-  addEhrBtn.id = '_scribe_add_ehr';
-  addEhrBtn.className = 'scribe-btn scribe-add-ehr-disabled';
-  addEhrBtn.textContent = 'Add To EHR';
-  addEhrBtn.disabled = true;
-  addEhrBtn.onclick = ()=>{
-    console.log('[SCRIBE] Add EHR is disabled (placeholder).');
-    resetAllEditCountersToZero();
-  };
-
-  actions.appendChild(clearBtn);
-  actions.appendChild(saveBtn);
-  actions.appendChild(addEhrBtn);
-  scroller.appendChild(actions);
 
   saveLatestSoap(latestSoapNote);
   updateTotalsAndEhrState();
 
   scroller.scrollTop = 0;
   const firstBox = scroller.querySelector('textarea[data-section]');
-  if(firstBox){
-    try{ firstBox.focus(); }catch{}
-  }
+  if(firstBox){ try{ firstBox.focus(); }catch{} }
 }
 
-// Rendering while AI generating (NO duplicate heading; keep the single top badge)
 function renderSoapNoteGenerating(elapsed){
   const scroller = soapContainerEnsure();
   scroller.innerHTML = `
@@ -644,7 +735,7 @@ function renderSoapNoteGenerating(elapsed){
 }
 
 // ==========================
-// Signals
+// Signal handling (Socket.IO / BroadcastChannel)
 // ==========================
 function handleSignalMessage(packet){
   if(!packet?.type) return;
@@ -687,12 +778,13 @@ function handleSignalMessage(packet){
 
   else if(packet.type === 'soap_note_console'){
     const soap = packet.data || {};
-    initializeEditMetaForSoap(soap);
+    initializeEditMetaForSoap(soap); // new AI content -> fresh baseline and counters
     latestSoapNote = soap; saveLatestSoap(latestSoapNote);
 
     const activeId = loadActiveItemId();
     if(activeId){
-      const hist = loadHistory(); const i = hist.findIndex(x=>x.id === activeId);
+      const hist = loadHistory();
+      const i = hist.findIndex(x=>x.id === activeId);
       if(i !== -1){ hist[i].soap = latestSoapNote; saveHistory(hist); }
     }
 
@@ -704,14 +796,13 @@ function handleSignalMessage(packet){
   }
 }
 
-// Mirror BroadcastChannel events
 try{
   transcriptBC.onmessage = (e) => handleSignalMessage(e.data);
-  soapBC.onmessage = (e) => handleSignalMessage(e.data);
+  soapBC.onmessage       = (e) => handleSignalMessage(e.data);
 }catch(e){ console.warn('[SCRIBE] BroadcastChannel unavailable:', e); }
 
 // ==========================
-// Socket.IO
+// Socket.IO loader + connection
 // ==========================
 async function loadScript(src, timeoutMs = 8000){
   return new Promise((resolve,reject)=>{
@@ -738,7 +829,7 @@ async function loadSocketIoClientFor(endpointBase){
 }
 function connectTo(endpointBase, onFailover){
   return new Promise(resolve=>{
-    setStatus('Connecting');
+    setStatus('Connecting'); // initial pill
     SERVER_URL = endpointBase;
     const opts = { path: '/socket.io', transports: ['websocket'], reconnection: true, secure: SERVER_URL.startsWith('https://') };
     try{ socket?.close(); }catch{}
@@ -750,25 +841,28 @@ function connectTo(endpointBase, onFailover){
     socket.on('connect', ()=>{
       connected = true; clearTimeout(failTimer);
       socket.emit('request_device_list');
-      socket.on('device_list', updateDeviceList);
+      socket.on('device_list', updateDeviceList); // <- device count will set the status pill
       socket.on('signal', handleSignalMessage);
-      setStatus('Connected');
+      // Do NOT force status to "Connected" here; device_list decides based on count.
       resolve();
     });
 
     socket.on('connect_error', err => console.warn('[SCRIBE] connect_error:', err));
-    socket.on('disconnect', ()=>{ showNoDevices(); setStatus('Disconnected'); });
+    socket.on('disconnect', ()=>{
+      showNoDevices();
+      setStatus('Disconnected'); // socket fully disconnected
+    });
   });
 }
 
 // ==========================
-// Restore from localStorage
+// Restore state from localStorage
 // ==========================
 function restoreFromLocalStorage(){
   // Transcript history
   transcriptEl.innerHTML = '';
   const history = loadHistory();
-  if(history.length === 0){ ensureTranscriptPlaceholder(); }
+  if(history.length === 0) ensureTranscriptPlaceholder();
   else{
     removeTranscriptPlaceholder();
     history.forEach(item => transcriptEl.appendChild(createTranscriptCard(item)));
@@ -783,13 +877,51 @@ function restoreFromLocalStorage(){
   }
   highlightActiveCard();
 
-  // Ensure the single global badge is present on the FIRST heading
   ensureTopHeadingBadge();
 
-  if(historyList.length === 0){
-    renderSoapBlank();
-  } else {
-    renderSoapNote(latestSoapNote || {});
+  if(historyList.length === 0) renderSoapBlank();
+  else renderSoapNote(latestSoapNote || {});
+}
+
+// ==========================
+// Wire HTML buttons
+// ==========================
+function wireSoapActionButtons(){
+  const scroller = soapContainerEnsure();
+
+  if(clearBtnEl){
+    clearBtnEl.onclick = ()=>{
+      scroller.querySelectorAll('textarea[data-section]').forEach(t=>{
+        t.value = '';
+        autoExpandTextarea(t);
+        rebaseBoxStateToCurrent(t); // provenance -> empty baseline
+        t.dataset.editCount = '0';
+        const headMeta = scroller.querySelector(`.scribe-section[data-section="${CSS.escape(t.dataset.section)}"] .scribe-section-meta`);
+        if(headMeta) headMeta.textContent = `Edits: 0`;
+      });
+      persistSoapFromUI();
+      resetAllEditCountersToZero();
+      console.log('[SCRIBE] SOAP cleared and edit counters reset.');
+    };
+  }
+
+  if(saveBtnEl){
+    saveBtnEl.onclick = ()=>{
+      persistSoapFromUI();
+      scroller.querySelectorAll('textarea[data-section]').forEach(t=> rebaseBoxStateToCurrent(t));
+      resetAllEditCountersToZero();
+      console.log('[SCRIBE] SOAP saved and edit counters reset.');
+    };
+  }
+
+  if(addEhrBtnEl){
+    addEhrBtnEl.disabled = true;
+    addEhrBtnEl.classList.add('scribe-add-ehr-disabled');
+    addEhrBtnEl.onclick = ()=>{
+      console.log('[SCRIBE] Add EHR is disabled (placeholder).');
+      scroller.querySelectorAll('textarea[data-section]').forEach(t=> rebaseBoxStateToCurrent(t));
+      resetAllEditCountersToZero();
+    };
   }
 }
 
@@ -802,6 +934,7 @@ function restoreFromLocalStorage(){
     showNoDevices();
 
     restoreFromLocalStorage();
+    wireSoapActionButtons();
 
     await loadSocketIoClientFor(preferred);
     await connectTo(preferred, async ()=>{
