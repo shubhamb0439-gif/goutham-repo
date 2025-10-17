@@ -34,7 +34,7 @@ jobs:
         run: |
           mkdir -p backend/public
           cp -r frontend/public/* backend/public/
-          cp -r frontend/views/* backend/public/
+          # Don't copy views directly if you want /page-name URLs
 
       # Step 5: Deploy backend to Azure
       - name: Deploy to Azure Web App
@@ -44,6 +44,7 @@ jobs:
           slot-name: 'Production'
           package: ./backend
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_D6D0F44F5A774D408C405532F9EA0817 }}
+
 
 
 
