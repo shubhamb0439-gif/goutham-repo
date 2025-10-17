@@ -1,8 +1,7 @@
 # Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 
-name: Build and deploy Node.js apps to Azure Web App - xr-messaging
-
+name: Build and deploy Node.js app to Azure Web App - xr-messaging
 
 on:
   push:
@@ -15,39 +14,30 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout code
+      # Step 1: Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2️⃣ Set up Node.js
+      # Step 2: Set up Node.js
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20.19.0'
 
-      # 3️⃣ Install dependencies for both servers
-      - name: Install all dependencies
-        run: |
-          npm --prefix desktop-web/backend install --force
-          npm --prefix device-pwa/backend install --force
+      # Step 3: Install dependencies
+      - name: Install dependencies
+        working-directory: backend
+        run: npm install --force
 
-      # 4️⃣ Prepare deploy folder (combine both backends)
-      - name: Prepare combined deploy package
-        run: |
-          mkdir -p deploy/desktop-web/backend
-          mkdir -p deploy/device-pwa/backend
-          cp -r desktop-web/backend/* deploy/desktop-web/backend/
-          cp -r device-pwa/backend/* deploy/device-pwa/backend/
-          cp package.json deploy/
-
-      # 5️⃣ Deploy combined folder to Azure
+      # Step 4: Deploy to Azure Web App
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'xr-messaging'
           slot-name: 'Production'
-          package: ./deploy
+          package: ./backend
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_D6D0F44F5A774D408C405532F9EA0817 }}
+
 
 
 
