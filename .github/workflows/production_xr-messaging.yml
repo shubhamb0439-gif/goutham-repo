@@ -22,33 +22,21 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.19.0'   # latest Node 20.x
+          node-version: '20.19.0'   # or your Node version
 
-      # Step 3: Install root dependencies (if any)
-      - name: Install root dependencies
-        run: npm install || true
-
-      # Step 4: Install frontend dependencies and build frontend
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm install --force
-
-      - name: Build frontend
-        working-directory: frontend
-        run: |
-          mkdir -p build
-          cp *.html *.js *.css *.png build/
-      # Step 5: Copy frontend build into backend/public
-      - name: Copy frontend to backend
-        run: |
-          mkdir -p backend/public
-          cp -r frontend/build/* backend/public/
-      # Step 6: Install backend dependencies
+      # Step 3: Install backend dependencies
       - name: Install backend dependencies
         working-directory: backend
         run: npm install --force
 
-      # Step 7: Deploy backend folder to Azure
+      # Step 4: Copy static frontend files to backend/public
+      - name: Copy frontend files to backend
+        run: |
+          mkdir -p backend/public
+          cp -r frontend/public/* backend/public/
+          cp -r frontend/views/* backend/public/
+
+      # Step 5: Deploy backend to Azure
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
@@ -56,6 +44,7 @@ jobs:
           slot-name: 'Production'
           package: ./backend
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_D6D0F44F5A774D408C405532F9EA0817 }}
+
 
 
 
