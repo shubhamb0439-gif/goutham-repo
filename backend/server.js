@@ -104,18 +104,6 @@ if (!IS_PROD) {
   });
 }
 
-
-// -------------------- Index Route --------------------
-app.get('/', (_req, res) => {
-  dlog('[ROUTE] /');
-  if (!staticPathFound) return res.status(404).send('Static not found');
-  const html = fs.readFileSync(path.join(staticPathFound, 'index.html'), 'utf8');
-  res.send(injectTurnConfig(html));
-});
-
-
-
-
 // -------------------- Static --------------------
 
 // -------------------- Static --------------------
