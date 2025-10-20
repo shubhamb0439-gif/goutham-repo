@@ -56,7 +56,7 @@ const LS_KEYS = {
 };
 
 // Endpoints (can override via window.SCRIBE_PUBLIC_ENDPOINTS)
-const NGROK_URL =  'https://428c76f0defe.ngrok-free.app';
+const NGROK_URL =  'http://localhost:3000';
 const AZURE_URL = 'https://xr-messaging-geexbheshbghhab7.centralindia-01.azurewebsites.net';
 const OVERRIDES = Array.isArray(window.SCRIBE_PUBLIC_ENDPOINTS) ? window.SCRIBE_PUBLIC_ENDPOINTS : null;
 
