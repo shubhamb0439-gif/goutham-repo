@@ -119,27 +119,46 @@ if (!IS_PROD) {
 
 // -------------------- Static --------------------
 
+// // -------------------- Static (serve FRONTEND) --------------------
+// const ROOT = path.resolve(__dirname, '..');                 // repo root
+// const FRONTEND_PUBLIC = path.join(ROOT, 'frontend', 'public');
+// const BACKEND_PUBLIC = path.join(__dirname, 'public');     // optional backend-only assets
+
+// // Serve frontend assets (html, js, css, images, manifest, service worker)
+// if (fs.existsSync(FRONTEND_PUBLIC)) {
+//   app.use(express.static(FRONTEND_PUBLIC, { index: false, maxAge: IS_PROD ? '1h' : 0 }));
+//   console.log(`[STATIC] Serving frontend/public from ${FRONTEND_PUBLIC}`);
+// } else {
+//   console.warn('[STATIC] frontend/public not found');
+// }
+
+// // (optional) keep backend/public if you really have backend-only assets
+// if (fs.existsSync(BACKEND_PUBLIC)) {
+//   app.use(express.static(BACKEND_PUBLIC, { index: false }));
+//   console.log(`[STATIC] Also serving backend/public from ${BACKEND_PUBLIC}`);
+// }
+
+// // -------------------- HTML routes (extensionless paths) --------------------
+// const sendFront = (res, file) => res.sendFile(path.join(FRONTEND_PUBLIC, file));
+
+// app.get('/', (_req, res) => sendFront(res, 'index.html'));
+// app.get('/device', (_req, res) => sendFront(res, 'device.html'));
+// app.get('/operator', (_req, res) => sendFront(res, 'operator.html'));
+// app.get('/dashboard', (_req, res) => sendFront(res, 'dashboard.html'));
+// app.get('/scribe-cockpit', (_req, res) => sendFront(res, 'scribe-cockpit.html'));
+
 // -------------------- Static (serve FRONTEND) --------------------
-const ROOT = path.resolve(__dirname, '..');                 // repo root
-const FRONTEND_PUBLIC = path.join(ROOT, 'frontend', 'public');
-const BACKEND_PUBLIC = path.join(__dirname, 'public');     // optional backend-only assets
+const LOCAL_FRONTEND = path.join(__dirname, '..', 'frontend', 'public');
+const BACKEND_PUBLIC = path.join(__dirname, 'public');
 
-// Serve frontend assets (html, js, css, images, manifest, service worker)
-if (fs.existsSync(FRONTEND_PUBLIC)) {
-  app.use(express.static(FRONTEND_PUBLIC, { index: false, maxAge: IS_PROD ? '1h' : 0 }));
-  console.log(`[STATIC] Serving frontend/public from ${FRONTEND_PUBLIC}`);
-} else {
-  console.warn('[STATIC] frontend/public not found');
-}
+//  Choose path dynamically: use frontend/public in local, backend/public in Azure
+const STATIC_PATH = fs.existsSync(LOCAL_FRONTEND) ? LOCAL_FRONTEND : BACKEND_PUBLIC;
 
-// (optional) keep backend/public if you really have backend-only assets
-if (fs.existsSync(BACKEND_PUBLIC)) {
-  app.use(express.static(BACKEND_PUBLIC, { index: false }));
-  console.log(`[STATIC] Also serving backend/public from ${BACKEND_PUBLIC}`);
-}
+app.use(express.static(STATIC_PATH, { index: false, maxAge: IS_PROD ? '1h' : 0 }));
+console.log(`[STATIC] Serving static files from ${STATIC_PATH}`);
 
 // -------------------- HTML routes (extensionless paths) --------------------
-const sendFront = (res, file) => res.sendFile(path.join(FRONTEND_PUBLIC, file));
+const sendFront = (res, file) => res.sendFile(path.join(STATIC_PATH, file));
 
 app.get('/', (_req, res) => sendFront(res, 'index.html'));
 app.get('/device', (_req, res) => sendFront(res, 'device.html'));
@@ -147,6 +166,8 @@ app.get('/operator', (_req, res) => sendFront(res, 'operator.html'));
 app.get('/dashboard', (_req, res) => sendFront(res, 'dashboard.html'));
 app.get('/scribe-cockpit', (_req, res) => sendFront(res, 'scribe-cockpit.html'));
 
+// Optional fallback for SPA-style routes (not required but safe)
+app.get('*', (_req, res) => sendFront(res, 'index.html'));
 
 // -------------------- TURN Injection --------------------
 function injectTurnConfig(html) {
