@@ -20,9 +20,9 @@
 // - Global "Total Edits" badge on first SOAP heading.
 // - "Add To EHR" always disabled (red).
 // - Clear / Save / Add EHR zero visible counters and REBASE provenance to current text (all 'B').
- 
+
 console.log('[SCRIBE] Booting Scribe Cockpit (incremental + persistent edit tracking + device-aware status)');
- 
+
 // ==========================
 // DOM elements
 // ==========================
@@ -30,12 +30,12 @@ const statusPill     = document.getElementById('statusPill');
 const deviceListEl   = document.getElementById('deviceList');
 const transcriptEl   = document.getElementById('liveTranscript');
 let   soapHost       = document.getElementById('soapNotePanel');
- 
+
 // Action buttons live in HTML (per your structure)
 const clearBtnEl     = document.getElementById('_scribe_clear');
 const saveBtnEl      = document.getElementById('_scribe_save');
 const addEhrBtnEl    = document.getElementById('_scribe_add_ehr');
- 
+
 if (!soapHost) {
   console.warn('[SCRIBE] soapNotePanel not found, creating dynamically');
   soapHost = document.createElement('div');
@@ -43,7 +43,7 @@ if (!soapHost) {
   soapHost.className = 'flex-1 min-h-0';
   document.body.appendChild(soapHost);
 }
- 
+
 // ==========================
 // Constants & State
 // ==========================
@@ -54,12 +54,12 @@ const LS_KEYS = {
   LATEST_SOAP: 'scribe.latestSoap',
   ACTIVE_ITEM_ID: 'scribe.activeItem',
 };
- 
+
 // Endpoints (can override via window.SCRIBE_PUBLIC_ENDPOINTS)
 const NGROK_URL =  'http://localhost:3000';
 const AZURE_URL = 'https://xr-messaging-geexbheshbghhab7.centralindia-01.azurewebsites.net';
 const OVERRIDES = Array.isArray(window.SCRIBE_PUBLIC_ENDPOINTS) ? window.SCRIBE_PUBLIC_ENDPOINTS : null;
- 
+
 const NGROK = (OVERRIDES?.[0] || NGROK_URL).replace(/\/$/, '');
 const AZURE  = (OVERRIDES?.[1] || AZURE_URL).replace(/\/$/, '');
 const host   = location.hostname;
@@ -67,10 +67,10 @@ const isLocal = location.protocol === 'file:' || host === 'localhost' || host ==
   /^192\.168\./.test(host) || /^10\./.test(host) || /^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
 const preferred = isLocal ? NGROK : AZURE;
 const fallback  = isLocal ? AZURE : NGROK;
- 
+
 let SERVER_URL = null;
-let socket     = null;
- 
+let socket     = null; 
+
 // In-memory UI state
 let latestSoapNote = {};                   // last received/edited SOAP payload
 const transcriptState = { byKey: {} };     // merges partial transcript chunks per (from->to)
@@ -78,10 +78,10 @@ let soapNoteTimer = null;
 let soapNoteStartTime = null;
 let currentActiveItemId = null;
 let soapGenerating = false;
- 
+
 // Global "Total Edits" badge node
-let totalEditsBadgeEl = null;
- 
+let totalEditsBadgeEl = null
+
 // Per-textarea incremental state (provenance + counters), kept at runtime;
 // persisted into latestSoapNote._editMeta on every change.
 const editStateMap = new WeakMap();
@@ -93,13 +93,13 @@ const editStateMap = new WeakMap();
     del: number                                // cumulative +deletions of baseline 'B'
   }
 */
- 
+
 // ==========================
 // BroadcastChannels (optional multi-tab sync)
 // ==========================
 const transcriptBC = new BroadcastChannel('scribe-transcript');
 const soapBC       = new BroadcastChannel('scribe-soap-note');
- 
+
 // ==========================
 // localStorage helpers
 // ==========================
@@ -114,7 +114,7 @@ function loadLatestSoap(){ return lsSafeParse(LS_KEYS.LATEST_SOAP, {}); }
 function saveActiveItemId(id){ localStorage.setItem(LS_KEYS.ACTIVE_ITEM_ID, id||''); }
 function loadActiveItemId(){ return localStorage.getItem(LS_KEYS.ACTIVE_ITEM_ID) || ''; }
 function uid(){ return Math.random().toString(36).slice(2) + Date.now().toString(36); }
- 
+
 // ==========================
 // Status pill
 // ==========================
@@ -129,7 +129,7 @@ function setStatus(status){
     default:              statusPill.classList.add('bg-yellow-500'); // 'connecting' or anything else
   }
 }
- 
+
 // ==========================
 // Devices list + device-aware status
 // ==========================
@@ -141,7 +141,7 @@ function showNoDevices(){
   li.textContent = 'No devices online';
   deviceListEl.appendChild(li);
 }
- 
+
 /**
  * Update the device list UI and set the status pill strictly by device count:
  * - 2+ devices  -> Connected (green)
@@ -150,7 +150,7 @@ function showNoDevices(){
  */
 function updateDeviceList(devices){
   if(!Array.isArray(devices)) devices = [];
- 
+
   // Render the list
   deviceListEl.innerHTML = '';
   devices.forEach(d=>{
@@ -161,18 +161,18 @@ function updateDeviceList(devices){
     deviceListEl.appendChild(li);
   });
   if(devices.length === 0) showNoDevices();
- 
+
   // Set status by count
   if (devices.length >= 2) setStatus('Connected');
   else if (devices.length === 1) setStatus('Connecting');
   else setStatus('Disconnected');
 }
- 
+
 // ==========================
 // Transcript helpers
 // ==========================
 function transcriptKey(from,to){ return `${from||'unknown'}->${to||'unknown'}`; }
- 
+
 function mergeIncremental(prev,next){
   if(!prev) return next||'';
   if(!next) return prev;
@@ -182,7 +182,7 @@ function mergeIncremental(prev,next){
   while(k>0 && !prev.endsWith(next.slice(0,k))) k--;
   return prev + next.slice(k);
 }
- 
+
 function ensureTranscriptPlaceholder(){
   if(!transcriptEl) return;
   if(!document.getElementById(PLACEHOLDER_ID)){
@@ -197,26 +197,26 @@ function removeTranscriptPlaceholder(){
   const ph = document.getElementById(PLACEHOLDER_ID);
   if(ph && ph.parentNode) ph.parentNode.removeChild(ph);
 }
- 
+
 function createTranscriptCard(item){
   const {id,from,to,text,timestamp} = item;
   const card = document.createElement('div');
   card.className = 'scribe-card';
   card.dataset.id = id;
- 
+
   const header = document.createElement('div');
   header.className = 'text-sm mb-1';
   const time = timestamp ? new Date(timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
   header.innerHTML = `🗣️ <span class="font-bold">${escapeHtml(from||'Unknown')}</span> <span class="opacity-60">→ ${escapeHtml(to||'Unknown')}</span> <span class="opacity-60">(${time})</span>`;
   card.appendChild(header);
- 
+
   const body = document.createElement('div');
   body.className = 'text-sm leading-6 text-gray-100';
   body.style.textAlign = 'justify';
   body.textContent = text || '';
   applyClamp(body, true);
   card.appendChild(body);
- 
+
   const del = document.createElement('button');
   del.setAttribute('data-action','delete');
   del.className = 'scribe-delete';
@@ -224,18 +224,17 @@ function createTranscriptCard(item){
   del.innerHTML = '🗑️';
   del.addEventListener('click', (e)=>{ e.stopPropagation(); deleteTranscriptItem(id); });
   card.appendChild(del);
- 
+
   card.addEventListener('click', (e)=>{
     if(e.target.closest('button[data-action="delete"]')) return;
     setActiveTranscriptId(id);
     const collapsed = body.dataset.collapsed === 'true';
     applyClamp(body, !collapsed);
   });
- 
+
   if(id === loadActiveItemId()) card.classList.add('scribe-card-active');
   return card;
 }
- 
 function applyClamp(el,collapse=true){
   if(collapse){
     el.dataset.collapsed='true';
@@ -253,13 +252,11 @@ function applyClamp(el,collapse=true){
     el.style.maxHeight='none';
   }
 }
- 
 function highlightActiveCard(){
   transcriptEl.querySelectorAll('.scribe-card').forEach(c=>c.classList.remove('scribe-card-active'));
   const active = transcriptEl.querySelector(`.scribe-card[data-id="${CSS.escape(loadActiveItemId())}"]`);
   if(active) active.classList.add('scribe-card-active');
 }
- 
 function setActiveTranscriptId(id){
   currentActiveItemId = id;
   saveActiveItemId(id);
@@ -270,7 +267,6 @@ function setActiveTranscriptId(id){
   latestSoapNote = Object.keys(soap).length ? soap : loadLatestSoap();
   if(!soapGenerating) renderSoapNote(latestSoapNote);
 }
- 
 function trimTranscriptIfNeeded(){
   const cards = transcriptEl.querySelectorAll('.scribe-card');
   if(cards.length > MAX_TRANSCRIPT_LINES){
@@ -281,7 +277,7 @@ function trimTranscriptIfNeeded(){
     }
   }
 }
- 
+
 function appendTranscriptItem({from,to,text,timestamp}){
   if(!transcriptEl || !text) return;
   removeTranscriptPlaceholder();
@@ -293,7 +289,7 @@ function appendTranscriptItem({from,to,text,timestamp}){
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
   setActiveTranscriptId(item.id);
 }
- 
+
 function deleteTranscriptItem(id){
   const history = loadHistory(); const idx = history.findIndex(x=>x.id===id);
   if(idx === -1) return;
@@ -320,12 +316,12 @@ function deleteTranscriptItem(id){
     highlightActiveCard();
   }
 }
- 
+
 // ==========================
 // INCREMENTAL EDIT TRACKING (persistent)
 // ==========================
 const MAX_DELTA_CELLS = 200000; // (n+1)*(m+1) guardrail
- 
+
 // RLE encode/decode for provenance tags ('B'/'U')
 function rleEncodeTags(tags){
   if(!tags || !tags.length) return [];
@@ -349,7 +345,7 @@ function rleDecodeToTags(rle, targetLen){
   else if(tags.length > targetLen) tags.length = targetLen;
   return tags;
 }
- 
+
 function buildLcsTable(prevArr, nextArr){
   const n = prevArr.length, m = nextArr.length;
   const rows = n + 1, cols = m + 1;
@@ -369,43 +365,43 @@ function buildLcsTable(prevArr, nextArr){
   }
   return table;
 }
- 
+
 function fastGreedyDelta(prevAnn, nextText, state){
   const prevChars = prevAnn.map(x=>x.ch);
   const nextChars = Array.from(nextText);
- 
+
   let p = 0;
   while(p < prevChars.length && p < nextChars.length && prevChars[p] === nextChars[p]) p++;
- 
+
   let s = 0;
   while(s < prevChars.length - p && s < nextChars.length - p &&
         prevChars[prevChars.length - 1 - s] === nextChars[nextChars.length - 1 - s]) s++;
- 
+
   for(let i = p; i < prevChars.length - s; i++){
     const removed = prevAnn[i];
     if(removed.tag === 'U') state.ins = Math.max(0, state.ins - 1);
     else state.del += 1;
   }
- 
+
   const inserted = [];
   for(let j = p; j < nextChars.length - s; j++){
     inserted.push({ ch: nextChars[j], tag: 'U' });
     state.ins += 1;
   }
- 
+
   const prefix = prevAnn.slice(0, p);
   const suffix = prevAnn.slice(prevChars.length - s);
   return [...prefix, ...inserted, ...suffix];
 }
- 
+
 function exactDeltaViaLcs(prevAnn, nextText, state){
   const prevChars = prevAnn.map(x=>x.ch);
   const nextChars = Array.from(nextText);
   const table = buildLcsTable(prevChars, nextChars);
- 
+
   let i = prevChars.length, j = nextChars.length;
   const newAnnRev = [];
- 
+
   while(i > 0 && j > 0){
     if(prevChars[i-1] === nextChars[j-1]){
       newAnnRev.push({ ch: nextChars[j-1], tag: prevAnn[i-1].tag });
@@ -432,11 +428,11 @@ function exactDeltaViaLcs(prevAnn, nextText, state){
     state.ins += 1;
     j--;
   }
- 
+
   newAnnRev.reverse();
   return newAnnRev;
 }
- 
+
 function applyIncrementalDiff(box, newText){
   let state = editStateMap.get(box);
   if(!state){
@@ -444,22 +440,22 @@ function applyIncrementalDiff(box, newText){
     editStateMap.set(box, state);
     return 0;
   }
- 
+
   const prevAnn = state.ann;
   const n = prevAnn.length, m = newText.length;
- 
+
   let newAnn;
   if( (n+1)*(m+1) > MAX_DELTA_CELLS ){
     newAnn = fastGreedyDelta(prevAnn, newText, state);
   } else {
     newAnn = exactDeltaViaLcs(prevAnn, newText, state);
   }
- 
+
   state.ann = newAnn;
   const total = Math.max(0, state.ins) + Math.max(0, state.del);
   return total;
 }
- 
+
 // Persist/Restore per-section incremental state
 function persistSectionState(section, state){
   latestSoapNote._editMeta = latestSoapNote._editMeta || {};
@@ -469,7 +465,7 @@ function persistSectionState(section, state){
   latestSoapNote._editMeta[section] = { edits, ins: state.ins, del: state.del, provRLE };
   saveLatestSoap(latestSoapNote);
 }
- 
+
 function restoreSectionState(section, contentText){
   const meta = latestSoapNote?._editMeta?.[section];
   if(!meta){
@@ -482,7 +478,7 @@ function restoreSectionState(section, contentText){
   const edits = Number.isFinite(meta.edits) ? meta.edits : Math.max(0, ins) + Math.max(0, del);
   return { ann, ins, del, edits };
 }
- 
+
 function rebaseBoxStateToCurrent(box){
   const current = box.value || '';
   const state = editStateMap.get(box) || { ann: [], ins: 0, del: 0 };
@@ -490,11 +486,11 @@ function rebaseBoxStateToCurrent(box){
   state.ins = 0;
   state.del = 0;
   editStateMap.set(box, state);
- 
+
   const section = box.dataset.section;
   persistSectionState(section, state);
 }
- 
+
 // ==========================
 // SOAP note rendering
 // ==========================
@@ -516,7 +512,7 @@ function autoExpandTextarea(el){
   el.style.height='auto';
   el.style.height = el.scrollHeight + 'px';
 }
- 
+
 function initializeEditMetaForSoap(soap){
   soap._aiMeta = soap._aiMeta || {};
   soap._editMeta = soap._editMeta || {};
@@ -531,18 +527,18 @@ function initializeEditMetaForSoap(soap){
     };
   });
 }
- 
+
 function persistSoapFromUI(){
   const scroller = soapContainerEnsure();
   const editors = scroller.querySelectorAll('textarea[data-section]');
   const soap = {};
   editors.forEach(t=>{ soap[t.dataset.section] = t.value || ''; });
- 
+
   soap._aiMeta   = (latestSoapNote && latestSoapNote._aiMeta)  ? latestSoapNote._aiMeta  : {};
   soap._editMeta = latestSoapNote?._editMeta || {};
   latestSoapNote = soap;
   saveLatestSoap(latestSoapNote);
- 
+
   const activeId = loadActiveItemId();
   if(activeId){
     const hist = loadHistory();
@@ -550,13 +546,13 @@ function persistSoapFromUI(){
     if(i !== -1){ hist[i].soap = latestSoapNote; saveHistory(hist); }
   }
 }
- 
+
 function ensureTopHeadingBadge(){
   if (totalEditsBadgeEl && document.body.contains(totalEditsBadgeEl)) return totalEditsBadgeEl;
- 
+
   const candidates = Array.from(document.querySelectorAll('h1, h2, h3, [data-title]'));
   let heading = candidates.find(el => (el.textContent || '').trim().toLowerCase().startsWith('soap note'));
- 
+
   if (!heading) {
     const wrap = document.createElement('div');
     wrap.className = 'scribe-heading-flex';
@@ -566,9 +562,9 @@ function ensureTopHeadingBadge(){
     soapHost.parentNode?.insertBefore(wrap, soapHost);
     heading = wrap;
   }
- 
+
   heading.classList.add('scribe-heading-flex');
- 
+
   totalEditsBadgeEl = document.createElement('div');
   totalEditsBadgeEl.id = '_scribe_total_edits';
   totalEditsBadgeEl.className = '_scribe_total_edits';
@@ -576,7 +572,7 @@ function ensureTopHeadingBadge(){
   heading.appendChild(totalEditsBadgeEl);
   return totalEditsBadgeEl;
 }
- 
+
 function updateTotalsAndEhrState(){
   const scroller = soapContainerEnsure();
   const editors = scroller.querySelectorAll('textarea[data-section]');
@@ -587,16 +583,16 @@ function updateTotalsAndEhrState(){
     const headMeta = scroller.querySelector(`.scribe-section[data-section="${CSS.escape(t.dataset.section)}"] .scribe-section-meta`);
     if(headMeta) headMeta.textContent = `Edits: ${m}`;
   });
- 
+
   const badge = ensureTopHeadingBadge();
   if (badge) badge.textContent = `Total Edits: ${total}`;
- 
+
   if(addEhrBtnEl){
     addEhrBtnEl.disabled = true;
     addEhrBtnEl.classList.add('scribe-add-ehr-disabled');
   }
 }
- 
+
 function resetAllEditCountersToZero(){
   const scroller = soapContainerEnsure();
   const editors = scroller.querySelectorAll('textarea[data-section]');
@@ -616,21 +612,21 @@ function resetAllEditCountersToZero(){
   saveLatestSoap(latestSoapNote);
   updateTotalsAndEhrState();
 }
- 
+
 function attachEditTrackingToTextarea(box, aiText){
   const section = box.dataset.section;
   const contentText = box.value || '';
- 
+
   const restored = restoreSectionState(section, contentText);
   editStateMap.set(box, { ann: restored.ann, ins: restored.ins, del: restored.del });
   box.dataset.editCount = String(restored.edits);
- 
+
   const scroller = soapContainerEnsure();
   const headMeta = scroller.querySelector(`.scribe-section[data-section="${CSS.escape(section)}"] .scribe-section-meta`);
   if(headMeta) headMeta.textContent = `Edits: ${restored.edits}`;
- 
+
   box.dataset.aiText = aiText || '';
- 
+
   let rafId = null;
   box.addEventListener('input', ()=>{
     autoExpandTextarea(box);
@@ -640,19 +636,19 @@ function attachEditTrackingToTextarea(box, aiText){
         const now = box.value || '';
         const totalEdits = applyIncrementalDiff(box, now);
         box.dataset.editCount = String(totalEdits);
- 
+
         const state = editStateMap.get(box);
         persistSectionState(section, state);
- 
+
         latestSoapNote = latestSoapNote || {};
         latestSoapNote._editMeta = latestSoapNote._editMeta || {};
         latestSoapNote._editMeta[section] = latestSoapNote._editMeta[section] || {};
         latestSoapNote._editMeta[section].edits = totalEdits;
         saveLatestSoap(latestSoapNote);
- 
+
         const headMetaNow = scroller.querySelector(`.scribe-section[data-section="${CSS.escape(section)}"] .scribe-section-meta`);
         if(headMetaNow) headMetaNow.textContent = `Edits: ${totalEdits}`;
- 
+
         updateTotalsAndEhrState();
         persistSoapFromUI();
       }catch(e){ console.warn('[SCRIBE] input handler error', e); }
@@ -660,70 +656,70 @@ function attachEditTrackingToTextarea(box, aiText){
     });
   });
 }
- 
+
 function renderSoapNote(soap){
   if(soapGenerating) return;
   const scroller = soapContainerEnsure();
   scroller.innerHTML = '';
- 
+
   ensureTopHeadingBadge();
- 
+
   const sections = ['Chief Complaints','History of Present Illness','Subjective','Objective','Assessment','Plan','Medication'];
- 
+
   if(soap && Object.keys(soap).length && !soap._aiMeta){
     initializeEditMetaForSoap(soap);
   }
- 
+
   latestSoapNote = latestSoapNote || soap || {};
   latestSoapNote._aiMeta   = latestSoapNote._aiMeta   || (soap ? soap._aiMeta   : {}) || {};
   latestSoapNote._editMeta = latestSoapNote._editMeta || (soap ? soap._editMeta : {}) || {};
- 
+
   sections.forEach(section=>{
     const wrap = document.createElement('div');
     wrap.className = 'scribe-section';
     wrap.dataset.section = section;
- 
+
     const head = document.createElement('div');
     head.className = 'scribe-section-head';
- 
+
     const h = document.createElement('h3');
     h.textContent = section;
- 
+
     const metaSpan = document.createElement('div');
     metaSpan.className = 'scribe-section-meta';
     metaSpan.textContent = 'Edits: 0';
- 
+
     head.appendChild(h);
     head.appendChild(metaSpan);
     wrap.appendChild(head);
- 
+
     const box = document.createElement('textarea');
     box.className = 'scribe-textarea';
     box.readOnly = false;
     box.dataset.section = section;
- 
+
     const rawVal = soap?.[section];
     const contentText = Array.isArray(rawVal) ? rawVal.join('\n') : (typeof rawVal === 'string' ? rawVal : '');
     box.value = contentText;
     autoExpandTextarea(box);
- 
+
     const aiText = soap?._aiMeta?.[section]?.text ?? contentText;
     latestSoapNote._aiMeta[section] = latestSoapNote._aiMeta[section] || { text: aiText };
- 
+
     attachEditTrackingToTextarea(box, aiText);
- 
+
     wrap.appendChild(box);
     scroller.appendChild(wrap);
   });
- 
+
   saveLatestSoap(latestSoapNote);
   updateTotalsAndEhrState();
- 
+
   scroller.scrollTop = 0;
   const firstBox = scroller.querySelector('textarea[data-section]');
   if(firstBox){ try{ firstBox.focus(); }catch{} }
 }
- 
+
 function renderSoapNoteGenerating(elapsed){
   const scroller = soapContainerEnsure();
   scroller.innerHTML = `
@@ -733,28 +729,28 @@ function renderSoapNoteGenerating(elapsed){
   `;
   ensureTopHeadingBadge();
 }
- 
+
 // ==========================
 // Signal handling (Socket.IO / BroadcastChannel)
 // ==========================
 function handleSignalMessage(packet){
   if(!packet?.type) return;
- 
+
   if(packet.type === 'transcript_console'){
     const p = packet.data || {};
     const { from, to, text = '', final = false, timestamp } = p;
     const key = transcriptKey(from,to);
     const slot = (transcriptState.byKey[key] ||= { partial:'', paragraph:'', flushTimer:null });
- 
+
     if(!final){
       slot.partial = text;
       return;
     }
- 
+
     const mergedFinal = mergeIncremental(slot.partial, text);
     slot.partial = '';
     slot.paragraph = mergeIncremental(slot.paragraph ? slot.paragraph + ' ' : '', mergedFinal);
- 
+
     if(slot.flushTimer) clearTimeout(slot.flushTimer);
     slot.flushTimer = setTimeout(()=>{
       if(slot.paragraph){
@@ -764,7 +760,7 @@ function handleSignalMessage(packet){
       }
       slot.flushTimer = null;
     }, 800);
- 
+
     if(!soapNoteTimer){
       soapGenerating = true;
       renderSoapNoteGenerating(0);
@@ -775,32 +771,32 @@ function handleSignalMessage(packet){
       }, 1000);
     }
   }
- 
+
   else if(packet.type === 'soap_note_console'){
     const soap = packet.data || {};
     initializeEditMetaForSoap(soap); // new AI content -> fresh baseline and counters
     latestSoapNote = soap; saveLatestSoap(latestSoapNote);
- 
+
     const activeId = loadActiveItemId();
     if(activeId){
       const hist = loadHistory();
       const i = hist.findIndex(x=>x.id === activeId);
       if(i !== -1){ hist[i].soap = latestSoapNote; saveHistory(hist); }
     }
- 
+
     soapBC.postMessage({ type:'soap_note_console', data: soap, timestamp: packet.timestamp || Date.now() });
- 
+
     if(soapNoteTimer){ clearInterval(soapNoteTimer); soapNoteTimer = null; }
     soapGenerating = false;
     renderSoapNote(latestSoapNote);
   }
 }
- 
+
 try{
   transcriptBC.onmessage = (e) => handleSignalMessage(e.data);
   soapBC.onmessage       = (e) => handleSignalMessage(e.data);
 }catch(e){ console.warn('[SCRIBE] BroadcastChannel unavailable:', e); }
- 
+
 // ==========================
 // Socket.IO loader + connection
 // ==========================
@@ -834,10 +830,10 @@ function connectTo(endpointBase, onFailover){
     const opts = { path: '/socket.io', transports: ['websocket'], reconnection: true, secure: SERVER_URL.startsWith('https://') };
     try{ socket?.close(); }catch{}
     socket = window.io(SERVER_URL, opts);
- 
+
     let connected = false;
     const failTimer = setTimeout(()=>{ if(!connected) onFailover?.(); }, 4000);
- 
+
     socket.on('connect', ()=>{
       connected = true; clearTimeout(failTimer);
       socket.emit('request_device_list');
@@ -846,7 +842,7 @@ function connectTo(endpointBase, onFailover){
       // Do NOT force status to "Connected" here; device_list decides based on count.
       resolve();
     });
- 
+
     socket.on('connect_error', err => console.warn('[SCRIBE] connect_error:', err));
     socket.on('disconnect', ()=>{
       showNoDevices();
@@ -854,7 +850,7 @@ function connectTo(endpointBase, onFailover){
     });
   });
 }
- 
+
 // ==========================
 // Restore state from localStorage
 // ==========================
@@ -866,8 +862,8 @@ function restoreFromLocalStorage(){
   else{
     removeTranscriptPlaceholder();
     history.forEach(item => transcriptEl.appendChild(createTranscriptCard(item)));
-  }
- 
+  } 
+
   // SOAP
   latestSoapNote = loadLatestSoap();
   const historyList = loadHistory();
@@ -876,19 +872,19 @@ function restoreFromLocalStorage(){
     currentActiveItemId = historyList[historyList.length-1].id; saveActiveItemId(currentActiveItemId);
   }
   highlightActiveCard();
- 
+
   ensureTopHeadingBadge();
- 
+
   if(historyList.length === 0) renderSoapBlank();
   else renderSoapNote(latestSoapNote || {});
 }
- 
+
 // ==========================
 // Wire HTML buttons
 // ==========================
 function wireSoapActionButtons(){
   const scroller = soapContainerEnsure();
- 
+
   if(clearBtnEl){
     clearBtnEl.onclick = ()=>{
       scroller.querySelectorAll('textarea[data-section]').forEach(t=>{
@@ -904,7 +900,7 @@ function wireSoapActionButtons(){
       console.log('[SCRIBE] SOAP cleared and edit counters reset.');
     };
   }
- 
+
   if(saveBtnEl){
     saveBtnEl.onclick = ()=>{
       persistSoapFromUI();
@@ -913,7 +909,7 @@ function wireSoapActionButtons(){
       console.log('[SCRIBE] SOAP saved and edit counters reset.');
     };
   }
- 
+
   if(addEhrBtnEl){
     addEhrBtnEl.disabled = true;
     addEhrBtnEl.classList.add('scribe-add-ehr-disabled');
@@ -924,7 +920,7 @@ function wireSoapActionButtons(){
     };
   }
 }
- 
+
 // ==========================
 // Boot
 // ==========================
@@ -932,16 +928,16 @@ function wireSoapActionButtons(){
   try{
     ensureTranscriptPlaceholder();
     showNoDevices();
- 
+
     restoreFromLocalStorage();
     wireSoapActionButtons();
- 
+
     await loadSocketIoClientFor(preferred);
     await connectTo(preferred, async ()=>{
       if(!window.io) await loadSocketIoClientFor(fallback);
       await connectTo(fallback);
     });
- 
+
     console.log('[SCRIBE] Cockpit booted successfully');
   }catch(e){
     console.error('[SCRIBE] Failed to initialize:', e);
@@ -951,7 +947,7 @@ function wireSoapActionButtons(){
     }
   }
 })();
- 
+
 // ==========================
 // Helpers
 // ==========================
@@ -960,4 +956,3 @@ function escapeHtml(str){
     .replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')
     .replaceAll('"','&quot;').replaceAll("'","&#039;");
 }
- 

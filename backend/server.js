@@ -10,8 +10,6 @@ const { Server } = require('socket.io');
 const { createClient } = require('redis');
 const { createAdapter } = require('@socket.io/redis-adapter');
 const axios = require('axios'); // for SOAP note generation
-const sql = require('mssql');   // MSSQL driver
-const { Sequelize } = require('sequelize');
 
 
 const dotenv = require('dotenv');
@@ -85,6 +83,15 @@ app.use(express.json());
 console.log('[MIDDLEWARE] CORS + JSON enabled');
 
 
+// Block any /dashboard/* on 8080
+// app.use((req, res, next) => {
+//   const p = (req.path || '').toLowerCase();
+//   if (p === '/dashboard' || p === '/dashboard.html' || p.startsWith('/dashboard/')) {
+//     return res.status(404).type('text/plain').send('Not Found');
+//   }
+//   next();
+// });
+
 
 // Block /dashboard/* only when users hit this app directly on :8080
 // Block /dashboard/* only in development when users hit :8080 directly
@@ -103,14 +110,44 @@ if (!IS_PROD) {
     next();
   });
 }
+
+
+
+
+
+
+
 // -------------------- Static --------------------
-const backendPublic = path.join(__dirname, 'public');
-if (fs.existsSync(backendPublic)) {
-  app.use(express.static(backendPublic));
-  console.log(`[STATIC] Serving static from ${backendPublic}`);
+
+// -------------------- Static (serve FRONTEND) --------------------
+const ROOT = path.resolve(__dirname, '..');                 // repo root
+const FRONTEND_PUBLIC = path.join(ROOT, 'frontend', 'public');
+const BACKEND_PUBLIC = path.join(__dirname, 'public');     // optional backend-only assets
+
+// Serve frontend assets (html, js, css, images, manifest, service worker)
+if (fs.existsSync(FRONTEND_PUBLIC)) {
+  app.use(express.static(FRONTEND_PUBLIC, { index: false, maxAge: IS_PROD ? '1h' : 0 }));
+  console.log(`[STATIC] Serving frontend/public from ${FRONTEND_PUBLIC}`);
 } else {
-  dlog('[STATIC] backend/public not found');
+  console.warn('[STATIC] frontend/public not found');
 }
+
+// (optional) keep backend/public if you really have backend-only assets
+if (fs.existsSync(BACKEND_PUBLIC)) {
+  app.use(express.static(BACKEND_PUBLIC, { index: false }));
+  console.log(`[STATIC] Also serving backend/public from ${BACKEND_PUBLIC}`);
+}
+
+// -------------------- HTML routes (extensionless paths) --------------------
+const sendFront = (res, file) => res.sendFile(path.join(FRONTEND_PUBLIC, file));
+
+app.get('/', (_req, res) => sendFront(res, 'index.html'));
+app.get('/device', (_req, res) => sendFront(res, 'device.html'));
+app.get('/operator', (_req, res) => sendFront(res, 'operator.html'));
+app.get('/dashboard', (_req, res) => sendFront(res, 'dashboard.html'));
+app.get('/scribe-cockpit', (_req, res) => sendFront(res, 'scribe-cockpit.html'));
+
+
 // -------------------- TURN Injection --------------------
 function injectTurnConfig(html) {
   dlog('[TURN] injectTurnConfig start');
@@ -357,44 +394,6 @@ app.get('/health', async (_req, res) => {
   }
 });
 
-// Service Principal (Local or other fallback)
-sequelize = new Sequelize(process.env.DB_NAME, process.env.DB_CLIENT_ID, process.env.DB_CLIENT_SECRET, {
-  host: process.env.DB_SERVER,
-  dialect: 'mssql',
-  port: parseInt(process.env.DB_PORT),
-  dialectOptions: {
-    authentication: {
-      type: 'azure-active-directory-service-principal-secret',
-      options: {
-        clientId: process.env.DB_CLIENT_ID,
-        clientSecret: process.env.DB_CLIENT_SECRET,
-        tenantId: process.env.DB_TENANT_ID
-      }
-    },
-    encrypt: true
-  }
-});
-
-async function connectToDatabase() {
-  try {
-    await sequelize.authenticate();
-    console.log('Connected to Azure SQL Database successfully');
-
-    await sequelize.sync({ alter: false })
-      .then(() => console.log('Database synced'))
-      .catch((err) => {
-        console.error('Error syncing database:', err);
-        process.exit(1);
-      });
-
-
-  } catch (err) {
-    console.error('Error connecting to the database:', err);
-    throw err;
-  }
-}
-connectToDatabase();
-
 
 // ---- Desktop HTTP telemetry (beginner path) ----
 app.post('/desktop-telemetry', (req, res) => {
@@ -470,6 +469,7 @@ app.post('/desktop-telemetry', (req, res) => {
     derr('[SOCKET.IO] Redis adapter failed; continuing in-memory:', e.message);
   }
 })();
+
 
 
 
@@ -1042,7 +1042,57 @@ io.on('connection', (socket) => {
     }
   });
 
+  // -------- telemetry (NEW) --------
+  // -------- telemetry (NEW) --------
+  // socket.on('telemetry', (payload) => {
+  //   try {
+  //     const d = typeof payload === 'string' ? JSON.parse(payload) : (payload || {});
+  //     const xrId = d.xrId || socket.data?.xrId;
+  //     if (!xrId) return;
 
+  //     const rec = {
+  //       xrId,
+  //       connType: d.connType || 'none',   // 'wifi' | 'cellular' | 'ethernet' | 'other' | 'none'
+  //       wifiDbm: numOrNull(d.wifiDbm),
+  //       wifiMbps: numOrNull(d.wifiMbps),
+  //       wifiBars: numOrNull(d.wifiBars),
+  //       cellDbm: numOrNull(d.cellDbm),
+  //       cellBars: numOrNull(d.cellBars),
+  //       netDownMbps: numOrNull(d.netDownMbps),
+  //       netUpMbps: numOrNull(d.netUpMbps),
+  //       ts: Date.now(),
+  //     };
+
+  //     // keep latest
+  //     telemetryByDevice.set(xrId, rec);
+
+  //     // 🔵 push into time-series history (for charts)
+  //     pushHist(telemetryHist, xrId, {
+  //       ts: rec.ts,
+  //       connType: rec.connType,
+  //       wifiMbps: rec.wifiMbps,
+  //       netDownMbps: rec.netDownMbps,
+  //       netUpMbps: rec.netUpMbps,
+  //       // pull current battery if we have it
+  //       batteryPct: batteryByDevice.get(xrId)?.pct ?? null,
+  //     });
+
+  //     // 🔵 live delta to subscribers of this device’s detail modal
+  //     io.to(`metrics:${xrId}`).emit('metrics_update', {
+  //       xrId,
+  //       telemetry: [telemetryHist.get(xrId).at(-1)]
+  //     });
+
+  //     // existing broadcast that powers the summary row
+  //     io.emit('telemetry_update', rec);
+
+  //     dlog('[telemetry] update', rec);
+  //   } catch (e) {
+  //     dwarn('[telemetry] bad payload:', e?.message || e);
+  //   }
+  // });
+
+  // -------- telemetry (NEW) --------
   // -------- telemetry (NEW) --------
   socket.on('telemetry', (payload) => {
     try {
@@ -1179,6 +1229,33 @@ io.on('connection', (socket) => {
     }
   });
 
+  // // Final cleanup and presence broadcast
+  // socket.on('disconnect', async (reason) => {
+  //   dlog('❎ [EVENT] disconnect', {
+  //     reason,
+  //     xrId: socket.data?.xrId,
+  //     device: socket.data?.deviceName
+  //   });
+
+  //   try {
+  //     const xrId = socket.data?.xrId;
+  //     if (xrId) {
+  //       // Remove from your in-memory maps
+  //       clients.delete(xrId);
+  //       onlineDevices.delete(xrId);
+
+  //       if (desktopClients.get(xrId) === socket) {
+  //         desktopClients.delete(xrId);
+  //         dlog('[disconnect] removed desktop client:', xrId);
+  //       }
+  //     }
+
+  //     // Broadcast device list so UIs update without manual refresh
+  //     await broadcastDeviceList();
+  //   } catch (err) {
+  //     derr('[disconnect] cleanup error:', err.message);
+  //   }
+  // });
 
   // Final cleanup and presence broadcast
   socket.on('disconnect', async (reason) => {

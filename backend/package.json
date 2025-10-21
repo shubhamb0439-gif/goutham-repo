@@ -7,13 +7,10 @@
   },
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",
-    "axios": "^1.12.2",
+    "axios": "^1.12.2",                        
     "dotenv": "^17.2.1",
     "express": "^4.19.2",
-    "mssql": "^12.0.0",
     "redis": "^5.8.0",
-    "sequelize": "^6.37.7",
-    "socket.io": "^4.7.2",
-    "tedious": "^19.0.0"
+    "socket.io": "^4.7.2"
   }
 }

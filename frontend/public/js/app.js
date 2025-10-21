@@ -210,7 +210,7 @@ let __stored = null;
 try { __stored = localStorage.getItem('signal_url') || null; } catch { }
 
 const __sameOrigin = location.origin;
-const fallbackNgrok = 'https://xr-messaging-geexbheshbghhab7.centralindia-01.azurewebsites.net';  // 👈 your existing ngrok
+const fallbackNgrok = 'http://localhost:3000';  // 👈 your existing ngrok
 
 const SERVER_URL = __signalOverride || __injected || __stored || __sameOrigin || fallbackNgrok;
 
@@ -426,7 +426,7 @@ function initSocket() {
 
     socket = io(SERVER_URL, {
         path: '/socket.io',
-        transports: ['websocket'],
+        transports: ['websocket', 'polling'],
         reconnection: true,
         reconnectionAttempts: Infinity,
         reconnectionDelay: 1000,
@@ -699,7 +699,86 @@ window.addEventListener('beforeunload', () => {
     }
 });
 
+// // ---------------- WebRTC & Messaging ----------------
 
+// function handleSignalMessage(data) {
+//   const type = data?.type;
+//   console.log('[SIGNAL] Received signal message:', type);
+
+//   // ✅ Console-only transcript aggregation (no partial logs; merged finals)
+//   if (type === 'transcript_console') {
+//     const p = data.data || {};
+//     const { from, to, text = '', final = false, timestamp } = p;
+
+//     const key = transcriptKey(from, to);
+//     const slot = (transcriptState.byKey[key] ||= {
+//       partial: '',
+//       paragraph: '',
+//       flushTimer: null,
+//       lastTs: 0,
+//     });
+
+//     // PARTIALS: store only, do NOT log (keeps console clean)
+//     if (!final) {
+//       slot.partial = text;                       // partials are cumulative
+//       slot.lastTs = Date.parse(timestamp) || Date.now();
+//       return; // no console output for partials
+//     }
+
+//     // FINALS: fold (partial + final) into one continuous paragraph
+//     const mergedFinal = mergeIncremental(slot.partial, text);
+//     slot.partial = '';
+
+//     // Accumulate finals into one paragraph (space between units)
+//     slot.paragraph = mergeIncremental(
+//       slot.paragraph ? (slot.paragraph + ' ') : '',
+//       mergedFinal
+//     );
+
+//     // Debounced flush: merge quick finals, then emit once
+//     if (slot.flushTimer) clearTimeout(slot.flushTimer);
+//     slot.flushTimer = setTimeout(() => {
+//       if (slot.paragraph) {
+//         // existing console log
+//         console.log(`[TRANSCRIPT] ${timestamp} final ${from} -> ${to}: "${slot.paragraph}"`);
+
+//         // NEW: mirror to cockpit via BroadcastChannel
+//         try {
+//           const bc = new BroadcastChannel('scribe-transcript');
+//           bc.postMessage({
+//             type: 'transcript_console',
+//             data: { from, to, text: slot.paragraph, final: true, timestamp }
+//           });
+//           // bc.close(); // optional
+//         } catch (e) {
+//           // ignore if BroadcastChannel not available
+//         }
+
+//         slot.paragraph = '';
+//       }
+//       slot.flushTimer = null;
+//     }, 1200);
+
+//     return; // don't fall through to WebRTC switch
+//   }
+
+//   // --- Existing WebRTC signaling (unchanged) ---
+//   switch (type) {
+//     case 'offer':
+//       console.log('[WEBRTC] 📞 Received offer from peer');
+//       handleOffer(data.data);
+//       break;
+//     case 'ice-candidate':
+//       console.log('[WEBRTC] ❄️ Received ICE candidate from peer');
+//       handleRemoteIceCandidate(data.data);
+//       break;
+//     case 'answer':
+//       console.log('[WEBRTC] Received answer (unexpected for desktop) – ignoring');
+//       break;
+//     default:
+//       console.log('[WEBRTC] Unhandled signal type:', type);
+//   }
+// } 
 
 // ---------- Persistent BroadcastChannels ----------
 const transcriptBC = new BroadcastChannel('scribe-transcript');
@@ -850,6 +929,60 @@ function createPeerConnection() {
     }
 
 
+    // pc.ontrack = (event) => {
+    //   console.log('[WEBRTC] Received track:', event.track.kind);
+    //   if (!remoteStream) {
+    //     console.log('[WEBRTC] Creating new remote stream');
+    //     remoteStream = new MediaStream();
+    //     videoElement.srcObject = remoteStream;
+    //     videoElement.muted = true;
+
+    //     // Mirror by default (front camera use-case)
+    //     setMirror(true);
+    //   }
+    //   if (!remoteStream.getTracks().some((t) => t.id === event.track.id)) {
+    //     console.log('[WEBRTC] Adding track to remote stream');
+    //     remoteStream.addTrack(event.track);
+    //   }
+
+    //   // Start monitor here too (first time we see a remote track)
+    //   if (!qualityStarted) {
+    //     qualityStarted = true;
+    //     console.log('[QUALITY] starting monitor (ontrack)…');
+    //     if (window.__stopQuality) { try { window.__stopQuality(); } catch { } }
+    //     window.__stopQuality = window.startWebRtcQualityMonitor(pc, {
+    //       intervalMs: 3000,
+    //       onSample: (s) => {
+    //         console.log('[QUALITY] sample', s);
+    //         try {
+    //           (window.socket || socket)?.emit('webrtc_quality', {
+    //             xrId: XR_ID,               // Desktop id, e.g., 'XR-1238'
+    //             ts: Date.now(),
+    //             jitterMs: s.jitterMs,
+    //             lossPct: s.lossPct,
+    //             rttMs: s.rttMs,
+    //             fps: s.fps,
+    //             dropped: s.dropped,
+    //             nackCount: s.nackCount
+    //           });
+    //         } catch { }
+    //       }
+
+
+    //     });
+    //   }
+
+    //   videoElement.play().catch((e) => {
+    //     if (e && e.name === 'AbortError') {
+    //       console.debug('[WEBRTC] play() aborted (teardown race) — safe to ignore');
+    //     } else {
+    //       console.warn('[WEBRTC] Video play error:', e);
+    //       showClickToPlayOverlay();
+    //     }
+    //   });
+    // };
+
+
     // Start WebRTC quality sampling as soon as we get the first remote track
     pc.ontrack = (event) => {
         console.log('[WEBRTC] Received track:', event.track.kind);
@@ -944,7 +1077,67 @@ function createPeerConnection() {
         }
     };
 
+    // pc.onconnectionstatechange = () => {
+    //   console.log('[WEBRTC] Connection state changed:', pc.connectionState);
+    //   if (pc.connectionState === 'connected') {
+    //     setStatus('Connected');
+    //   } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+    //     console.log('[WEBRTC] Connection failed or disconnected - stopping stream');
+    //     stopStream();
+    //     setStatus('Connecting');
+    //   }
+    // };
 
+    // pc.onconnectionstatechange = () => {
+    //   console.log('[WEBRTC] Connection state changed:', pc.connectionState);
+
+    //   if (pc.connectionState === 'connected') {
+    //     setStatus('Connected');
+
+    //     // ✅ Start monitor once, after we’re actually connected
+    //     if (!qualityStarted) {
+    //       qualityStarted = true;
+    //       console.log('[QUALITY] starting monitor…');
+
+    //       if (window.__stopQuality) { try { window.__stopQuality(); } catch { } }
+    //       window.__stopQuality = window.startWebRtcQualityMonitor(pc, {
+    //         intervalMs: 3000,
+    //         onSample: (s) => {
+    //           console.log('[QUALITY] sample', s); // DEBUG: verify we’re sampling every ~3s
+    //           // optional debug so you can see samples in DevTools
+    //           console.log('[QUALITY] sample', s);
+
+    //           try {
+    //             const id = typeof XR_ID !== 'undefined' ? XR_ID : 'XR-1238';
+    //             (window.socket || socket)?.emit('webrtc_quality', {
+    //               xrId: id,
+    //               ts: Date.now(),
+    //               jitterMs: s.jitterMs,
+    //               lossPct: s.lossPct,
+    //               rttMs: s.rttMs,
+    //               fps: s.fps,
+    //               dropped: s.dropped,
+    //               nackCount: s.nackCount
+    //             });
+    //           } catch { }
+    //         }
+    //       });
+    //     }
+
+    //   } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+    //     console.log('[WEBRTC] Connection failed or disconnected - stopping stream');
+
+    //     // 🛑 Stop the monitor when leaving connected
+    //     if (window.__stopQuality) {
+    //       try { window.__stopQuality(); } catch { }
+    //       window.__stopQuality = null;
+    //     }
+    //     qualityStarted = false;
+
+    //     stopStream();
+    //     setStatus('Connecting');
+    //   }
+    // };
 
     pc.onconnectionstatechange = () => {
         console.log('[WEBRTC] Connection state changed:', pc.connectionState);
@@ -1019,6 +1212,53 @@ function createPeerConnection() {
     return pc;
 }
 
+
+// async function handleOffer(offer) {
+//     console.log('[WEBRTC] Handling offer:', offer);
+
+//     // Start from a clean state so repeated starts work reliably
+//     stopStream();
+
+//     // Fresh RTCPeerConnection for this session
+//     peerConnection = createPeerConnection();
+
+//     // Flush any ICE candidates that arrived before the PC was ready
+//     if (pendingIceCandidates.length > 0) {
+//         console.log('[WEBRTC] Processing', pendingIceCandidates.length, 'pending ICE candidates');
+//         for (const cand of pendingIceCandidates) {
+//             // eslint-disable-next-line no-await-in-loop
+//             await handleRemoteIceCandidate(cand);
+//         }
+//         pendingIceCandidates = [];
+//     }
+
+//     try {
+//         console.log('[WEBRTC] Setting remote description');
+//         await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+
+//         console.log('[WEBRTC] Creating answer');
+//         const answer = await peerConnection.createAnswer();
+
+//         console.log('[WEBRTC] Setting local description');
+//         await peerConnection.setLocalDescription(answer);
+
+//         // ✅ Always include `to` so the server routes back to Android reliably
+//         const payload = {
+//             type: 'answer',
+//             to: currentPeerId(),              // e.g., 'XR-1234'
+//             from: XR_ID,
+//             data: peerConnection.localDescription,
+//         };
+//         console.log('[WEBRTC] Emitting signal (answer):', payload);
+//         socket?.emit('signal', payload);
+
+//         console.log('[WEBRTC] Answer sent to peer');
+//     } catch (err) {
+//         console.error('[WEBRTC] Error handling offer:', err);
+//         // Ensure we clean up so a fresh start works next time
+//         try { stopStream(); } catch (e) { /* noop */ }
+//     }
+// }
 
 async function handleOffer(offer) {
     console.log('[WEBRTC] Handling offer:', offer);
