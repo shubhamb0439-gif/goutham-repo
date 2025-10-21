@@ -30,11 +30,11 @@ jobs:
         run: npm install --force
 
       # Step 4: Copy static frontend files to backend/public
-      - name: Copy frontend files to backend
+      - name: Copy frontend to backend/public
         run: |
           mkdir -p backend/public
           cp -r frontend/views/* backend/public/
-          # Don't copy public directly if you want /page-name URLs
+          cp -r frontend/public/* backend/public/
 
       # Step 5: Deploy backend to Azure
       - name: Deploy to Azure Web App
@@ -44,6 +44,7 @@ jobs:
           slot-name: 'Production'
           package: ./backend
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_D6D0F44F5A774D408C405532F9EA0817 }}
+
 
 
 
