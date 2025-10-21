@@ -9,7 +9,7 @@
   const injected = (typeof window !== 'undefined' && window.__SIGNAL_URL__) || null;
   let stored = null; try { stored = localStorage.getItem('signal_url') || null; } catch {}
   const sameOrigin = (location && location.origin) || null;
-  const ngrokFallback = (typeof window !== 'undefined' && window.__NGROK_FALLBACK__) || 'http://localhost:3000';
+  const ngrokFallback = (typeof window !== 'undefined' && window.__NGROK_FALLBACK__) || 'https://xr-messaging-geexbheshbghhab7.centralindia-01.azurewebsites.net';
 
   window.SIGNAL_URL = pick(override, injected, stored, sameOrigin, ngrokFallback);
   if (override) { try { localStorage.setItem('signal_url', window.SIGNAL_URL); } catch {} }

@@ -210,7 +210,7 @@ let __stored = null;
 try { __stored = localStorage.getItem('signal_url') || null; } catch { }
 
 const __sameOrigin = location.origin;
-const fallbackNgrok = 'http://localhost:3000';  // 👈 your existing ngrok
+const fallbackNgrok = 'https://xr-messaging-geexbheshbghhab7.centralindia-01.azurewebsites.net';  // 👈 your existing ngrok
 
 const SERVER_URL = __signalOverride || __injected || __stored || __sameOrigin || fallbackNgrok;
 
