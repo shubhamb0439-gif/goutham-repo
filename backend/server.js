@@ -120,7 +120,7 @@ console.log('[MIDDLEWARE] CORS + JSON enabled');
   } catch (err) {
     console.error('❌ [DB] Failed to connect to Azure SQL:', err?.message || err);
     // If DB is critical, fail fast:
-    process.exit(1);
+    process.exit(0);
   }
 })();
 
