@@ -112,17 +112,17 @@ app.use(cors());
 app.use(express.json());
 console.log('[MIDDLEWARE] CORS + JSON enabled');
 
-// ✅ Connect to Azure SQL via Sequelize on boot
+// ✅ Connect to Azure SQL via Sequelize on boot (non-fatal if it fails)
 (async () => {
   try {
     await connectToDatabase();
     console.log('🚀 [DB] Azure SQL connection established');
   } catch (err) {
-    console.error('❌ [DB] Failed to connect to Azure SQL:', err?.message || err);
-    // If DB is critical, fail fast:
-    process.exit(0);
+    console.error('❌ [DB] Failed to connect to Azure SQL (continuing without DB):', err?.message || err);
+    // NOTE: Do not exit; server keeps running without DB.
   }
 })();
+
 
 // // -------------------- UI routes (migrated from frontend/server.js) --------------------
 // // Point these to your FRONTEND folders on disk:
