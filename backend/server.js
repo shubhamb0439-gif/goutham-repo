@@ -221,26 +221,22 @@ const sendView = (name) => (_req, res) => {
   }
 };
 
-// PWA top-level files (manifest, service worker)
-app.get('/manifest.webmanifest', (_req, res) =>
-  res.sendFile(path.join(PUBLIC_DIR, 'manifest.webmanifest'))
-);
+// PWA assets — keep this ABOVE any /device HTML route
+// Serve both common manifest URLs, but point both to device.webmanifest
+app.get(['/manifest.webmanifest', '/device.webmanifest'], (req, res) => {
+  res.type('application/manifest+json');
+  res.set('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC_DIR, 'device.webmanifest')); // file exists here
+});
 
-app.get('/sw.js', (_req, res) => {
+// Map ALL service-worker entrypoints to the same script
+app.get(['/sw.js', '/sw-device.js', '/device/sw.js'], (req, res) => {
   res.type('application/javascript');
-  res.sendFile(path.join(PUBLIC_DIR, 'js', 'sw-device.js'));
+  res.set('Service-Worker-Allowed', '/device/');             // allow /device/* scope
+  res.set('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC_DIR, 'sw-device.js'));       // NOTE: no /js subfolder
 });
 
-app.get('/device.webmanifest', (_req, res) => {
-  res.type('webmanifest');
-  res.sendFile(path.join(PUBLIC_DIR, 'device.webmanifest'));
-});
-
-app.get('/device/sw.js', (_req, res) => {
-  res.set('Service-Worker-Allowed', '/device/');
-  res.type('application/javascript');
-  res.sendFile(path.join(PUBLIC_DIR, 'js', 'sw-device.js'));
-});
 
 // Pretty routes → views
 app.get(['/device', '/device/'], sendView('device.html'));
