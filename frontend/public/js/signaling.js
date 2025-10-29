@@ -30,6 +30,10 @@ export class SignalingClient {
     this.socket = null;
     this.isConnected = false;
     this._manualClose = false;
+    // Queue emits while offline; flush on connect (prevents lost offer/ICE during blips)
+    this._outbox = [];            // [{event, data}]
+    this._OUTBOX_MAX = 200;       // cap to avoid unbounded growth
+
 
     // Presence / desktop preference (parity with Android)
     this.currentDesktopId = null;
@@ -134,6 +138,32 @@ export class SignalingClient {
     this.isConnected = false;
   }
 
+  /** Promise that resolves when connected (or rejects on timeout). */
+  waitUntilConnected(ms = 10000) {
+    if (this.isConnected) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => {
+        cleanup(); reject(new Error('waitUntilConnected: timeout'));
+      }, ms);
+      const onUp = () => { cleanup(); resolve(); };
+      const onErr = () => { cleanup(); reject(new Error('waitUntilConnected: error')); };
+      const cleanup = () => {
+        clearTimeout(t);
+        try {
+          this.socket?.off('connect', onUp);
+          this.socket?.off('connect_error', onErr);
+        } catch { }
+      };
+      try {
+        this.socket?.once('connect', onUp);
+        this.socket?.once('connect_error', onErr);
+      } catch {
+        cleanup(); reject(new Error('waitUntilConnected: no socket'));
+      }
+    });
+  }
+
+
   // ------------------------- Public API (parity) -------------------------
 
   /**
@@ -197,6 +227,13 @@ export class SignalingClient {
     this.socket.emit('join', this.xrId);
     this.socket.emit('identify', { deviceName: this.deviceName, xrId: this.xrId });
     this.socket.emit('request_device_list');
+    // Flush any queued emits in order
+    try {
+      for (const item of this._outbox) this.socket.emit(item.event, item.data);
+    } finally {
+      this._outbox.length = 0;
+    }
+
 
     this.listener?.onConnected?.();
   }
@@ -284,8 +321,12 @@ export class SignalingClient {
     if (s && this.isConnected) {
       s.emit(event, data);
     } else {
-      console.warn(`Socket not connected. Skipping emit [${event}].`);
+      // Queue and warn once for visibility
+      if (this._outbox.length < this._OUTBOX_MAX) this._outbox.push({ event, data });
+      else this._outbox.shift(), this._outbox.push({ event, data });
+      console.warn(`Socket not connected. Queued emit [${event}].`);
     }
+
   }
 }
 
