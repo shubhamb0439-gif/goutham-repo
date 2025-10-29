@@ -81,6 +81,9 @@ export class WebRtcStreamer {
 
     // 1) Capture media
     await this._ensureMedia();
+    // Tell voice.js the mic is now live (used only on mobile PWA guard)
+    try { window?.voice?.setMicActive?.(true); } catch { }
+
 
     // 2) Create PCs, add tracks, and send offers
     for (const targetId of targetIds) {
@@ -144,6 +147,9 @@ export class WebRtcStreamer {
       try { this._videoEl.srcObject = null; } catch { }
       try { this._videoEl.load && this._videoEl.load(); } catch { }
     }
+    // Mic is no longer live for voice.js
+    try { window?.voice?.setMicActive?.(false); } catch { }
+
 
     this._isStreaming = false;
   }
@@ -156,6 +162,8 @@ export class WebRtcStreamer {
         this._localStream = null;
       }
     } catch { }
+    try { window?.voice?.setMicActive?.(false); } catch { }
+
 
     try {
       if (this._videoEl) {
@@ -331,7 +339,7 @@ export class WebRtcStreamer {
     };
     // (Receiver-side events not used on the sender; kept for completeness)
     pc.ontrack = (ev) => console.debug(`[${targetId}] ontrack`, ev.streams?.[0]);
-    
+
 
     // Ensure the initial offer contains an m=audio section so first Unmute works without renegotiation.
     try {
