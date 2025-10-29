@@ -1,4 +1,5 @@
 const VERSION = 'xr-device-v1';
+
 const STATIC_ASSETS = [
   '/device', // HTML shell
   '/public/css/common.css',
@@ -17,10 +18,24 @@ const STATIC_ASSETS = [
   '/public/images/xr-logo-512.png'
 ];
 
+// JS that must stay fresh to avoid SDP/ICE mismatches after an update
+const CRITICAL_JS = new Set([
+  '/public/js/app.js',
+  '/public/js/config.js',
+  '/public/js/device.js',
+  '/public/js/signaling.js'
+]);
+
+// Dynamic/proxied endpoints that should never be cached by the SW
+const DYNAMIC_PREFIXES = ['/api', '/notes', '/soap', '/scribe', '/openai', '/ai'];
+
 self.addEventListener('install', (evt) => {
   evt.waitUntil((async () => {
     const cache = await caches.open(VERSION);
-    await cache.addAll(STATIC_ASSETS);
+    // Bypass the HTTP cache on install so we always prime with fresh assets
+    await Promise.all(
+      STATIC_ASSETS.map(p => cache.add(new Request(p, { cache: 'reload' })))
+    );
     self.skipWaiting();
   })());
 });
@@ -29,6 +44,12 @@ self.addEventListener('activate', (evt) => {
   evt.waitUntil((async () => {
     const keys = await caches.keys();
     await Promise.all(keys.filter(k => k !== VERSION).map(k => caches.delete(k)));
+
+    // Enable Navigation Preload for faster document loads
+    if (self.registration && self.registration.navigationPreload) {
+      try { await self.registration.navigationPreload.enable(); } catch {}
+    }
+
     self.clients.claim();
   })());
 });
@@ -40,13 +61,20 @@ self.addEventListener('fetch', (evt) => {
   // NEVER touch Socket.IO / websockets
   if (url.pathname.startsWith('/socket.io')) return;
 
+  // Only handle GET
   if (req.method !== 'GET') return;
 
-  // Keep pages fresh for XR flows (network-first for documents)
+  // Bypass dynamic/proxied endpoints completely (network only)
+  if (DYNAMIC_PREFIXES.some(prefix => url.pathname.startsWith(prefix))) return;
+
+  // Documents: network-first; if nav preload is available, use it
   if (req.destination === 'document') {
     evt.respondWith((async () => {
-      try { return await fetch(req, { cache: 'no-store' }); }
-      catch {
+      try {
+        const preload = await evt.preloadResponse;
+        if (preload) return preload;
+        return await fetch(req, { cache: 'no-store' });
+      } catch {
         const cache = await caches.open(VERSION);
         const cached = await cache.match('/device');
         return cached || Response.error();
@@ -55,7 +83,25 @@ self.addEventListener('fetch', (evt) => {
     return;
   }
 
-  // Stale-while-revalidate for static assets
+  // Critical scripts: network-first with cached fallback to avoid stale WebRTC/signaling
+  if (req.destination === 'script' && CRITICAL_JS.has(url.pathname)) {
+    evt.respondWith((async () => {
+      try {
+        const fresh = await fetch(req, { cache: 'no-store' });
+        // update cache in background
+        const cache = await caches.open(VERSION);
+        cache.put(req, fresh.clone());
+        return fresh;
+      } catch {
+        const cache = await caches.open(VERSION);
+        const cached = await cache.match(req);
+        return cached || Response.error();
+      }
+    })());
+    return;
+  }
+
+  // Everything else: stale-while-revalidate for static assets
   evt.respondWith((async () => {
     const cache = await caches.open(VERSION);
     const cached = await cache.match(req);
