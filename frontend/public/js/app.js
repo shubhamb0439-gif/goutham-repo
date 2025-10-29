@@ -166,30 +166,30 @@ const AUTO_KEY = 'XR_AUTOCONNECT';
 const medicationAvailabilityMap = new Map();
 
 async function checkMedicationAvailability(medications) {
-  if (!Array.isArray(medications) || medications.length === 0) {
-    return [];
-  }
-
-  try {
-    const response = await fetch(`${SERVER_URL}/api/medications/availability`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ names: medications }),
-    });
-
-    if (!response.ok) {
-      console.warn('[MED_CHECK] API returned error:', response.status);
-      return [];
+    if (!Array.isArray(medications) || medications.length === 0) {
+        return [];
     }
 
-    const data = await response.json();
-    return data.results || [];
-  } catch (err) {
-    console.error('[MED_CHECK] Error checking medications:', err);
-    return [];
-  }
+    try {
+        const response = await fetch(`${SERVER_URL}/api/medications/availability`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ names: medications }),
+        });
+
+        if (!response.ok) {
+            console.warn('[MED_CHECK] API returned error:', response.status);
+            return [];
+        }
+
+        const data = await response.json();
+        return data.results || [];
+    } catch (err) {
+        console.error('[MED_CHECK] Error checking medications:', err);
+        return [];
+    }
 }
 
 /* =========================
@@ -902,7 +902,13 @@ function createPeerConnection() {
             remoteStream = new MediaStream();
             videoElement.srcObject = remoteStream;
             videoElement.muted = true;
-            setMirror(true); // mirror for front-cam view
+            setMirror(true);
+            // iOS autoplay/rendering requirements
+            videoElement.playsInline = true;
+            videoElement.autoplay = true;
+            videoElement.setAttribute('playsinline', '');
+            videoElement.setAttribute('autoplay', '');
+            // mirror for front-cam view
         }
 
         if (!remoteStream.getTracks().some(t => t.id === event.track.id)) {
@@ -1097,6 +1103,23 @@ async function handleOffer(offer) {
         await peerConnection.setRemoteDescription(desc);
         lastRemoteOfferSdp = desc.sdp;
 
+        // Prefer H.264 when answering (iOS Safari camera sends H.264 best)
+        try {
+            const caps = RTCRtpReceiver.getCapabilities && RTCRtpReceiver.getCapabilities('video');
+            if (caps && Array.isArray(caps.codecs)) {
+                const h264 = caps.codecs.filter(c => (c.mimeType || '').toLowerCase() === 'video/h264');
+                if (h264.length && typeof peerConnection.getTransceivers === 'function') {
+                    for (const t of peerConnection.getTransceivers()) {
+                        if (t.receiver && t.receiver.track && t.receiver.track.kind === 'video' &&
+                            typeof t.setCodecPreferences === 'function') {
+                            t.setCodecPreferences(h264);
+                        }
+                    }
+                }
+            }
+        } catch {/* never block negotiation for this */ }
+
+
         // 6) only answer when the state is exactly have-remote-offer
         if (peerConnection.signalingState !== 'have-remote-offer') {
             console.log('[WEBRTC] Not in have-remote-offer (state =', peerConnection.signalingState, ') — skipping answer.');
@@ -1280,7 +1303,7 @@ function updateDeviceList(devices) {
         console.log(`[PAIR] Peer (${peerId}) is not online yet — waiting`);
     }
 
-    
+
 
 }
 
