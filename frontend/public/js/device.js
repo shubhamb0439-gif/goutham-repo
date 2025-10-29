@@ -4,9 +4,6 @@
 // CITED FROM ANDROID SOURCE: WebRtcStreamer, AudioStreamer, PeerConnectionObserver.  (See upload) 
 
 import { SignalingClient } from './signaling.js';
-const isIOS = () => /iPad|iPhone|iPod/i.test(navigator.userAgent || '') ||
-  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-
 
 export class WebRtcStreamer {
   /**
@@ -334,7 +331,7 @@ export class WebRtcStreamer {
     };
     // (Receiver-side events not used on the sender; kept for completeness)
     pc.ontrack = (ev) => console.debug(`[${targetId}] ontrack`, ev.streams?.[0]);
-
+    
 
     // Ensure the initial offer contains an m=audio section so first Unmute works without renegotiation.
     try {
@@ -344,17 +341,6 @@ export class WebRtcStreamer {
       if (!hasAudio && typeof pc.addTransceiver === 'function') {
         pc.addTransceiver('audio', { direction: 'sendonly' });
       }
-
-      // Ensure the initial offer also contains an m=video section (important for iOS)
-      try {
-        const hasVideo = typeof pc.getTransceivers === 'function'
-          && pc.getTransceivers().some(t => t?.receiver?.track?.kind === 'video' || t?.sender?.track?.kind === 'video');
-
-        if (!hasVideo && typeof pc.addTransceiver === 'function') {
-          pc.addTransceiver('video', { direction: 'sendonly' });
-        }
-      } catch { }
-
     } catch { }
 
 
@@ -398,21 +384,6 @@ export class WebRtcStreamer {
         console.warn('[RTC] addTrack failed (possibly duplicate)', e);
       }
     });
-
-    // iOS camera prefers H.264; hint codec preferences on sender side
-    try {
-      if (isIOS() && typeof RTCRtpSender !== 'undefined' && typeof pc.getTransceivers === 'function') {
-        const caps = RTCRtpSender.getCapabilities && RTCRtpSender.getCapabilities('video');
-        if (caps && Array.isArray(caps.codecs)) {
-          const h264 = caps.codecs.filter(c => (c.mimeType || '').toLowerCase() === 'video/h264');
-          const vt = pc.getTransceivers().find(t => t.sender && t.sender.track && t.sender.track.kind === 'video');
-          if (vt && h264.length && typeof vt.setCodecPreferences === 'function') {
-            vt.setCodecPreferences(h264);
-          }
-        }
-      }
-    } catch { /* never block flow */ }
-
 
     this._requestKeyFrame(pc); // ← ADDED LINE: ask for an immediate keyframe
   }
