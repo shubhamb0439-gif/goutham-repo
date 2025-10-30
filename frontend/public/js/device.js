@@ -24,6 +24,10 @@ export class WebRtcStreamer {
     // Track all streams we create/bind so Stop can kill every track
     this._allStreams = new Set();
     this._cameraTrack = null; // optional: remember active camera track
+    // PWA mic-swap helpers (keep RTP alive with silence while freeing hardware)
+    this._audioContext = null;   // owns the silent track
+    this._silentTrack = null;    // cached synthetic silence (MediaStreamTrack)
+
 
     // Peer connections by targetId
     /** @type {Map<string, RTCPeerConnection>} */
@@ -218,6 +222,40 @@ export class WebRtcStreamer {
     await this._createAndSendOffer(targetId);
   }
 
+  // --- Mic swap strategy: free mic hardware while keeping RTP alive (Android-parity) ---
+  _getSilentTrack() {
+    // Reuse cached silent track if still live
+    if (this._silentTrack && this._silentTrack.readyState === 'live') return this._silentTrack;
+
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!this._audioContext) this._audioContext = new AC();
+    // Some Androids suspend AudioContext until a user gesture; resume defensively
+    try { if (this._audioContext.state === 'suspended') this._audioContext.resume?.(); } catch { }
+
+    const dest = this._audioContext.createMediaStreamDestination();
+    this._silentTrack = dest.stream.getAudioTracks()[0];
+    return this._silentTrack;
+  }
+
+
+
+  async _replaceSenderTrackOnAllPcs(trackOrNull) {
+    for (const pc of this._pcs.values()) {
+      const s = this._getAudioSender(pc);
+      if (!s) continue;
+      // Keep m=audio alive even when we free the mic
+      const t = trackOrNull || this._getSilentTrack();
+      try { await s.replaceTrack(t); } catch { }
+    }
+  }
+
+  _stopLocalMicTracks() {
+    if (!this._localStream) return;
+    try {
+      this._localStream.getAudioTracks().forEach(t => { try { t.stop(); } catch { } });
+    } catch { }
+  }
+
 
   /** Mute/unmute audio (same semantics as Android). */
   // Back-compat public APIs (buttons/voice may call these)
@@ -242,21 +280,20 @@ export class WebRtcStreamer {
   }
 
   muteMic() {
-    const seen = new Set();
+    // 1) Free the mic hardware so SpeechRecognition can use it while video keeps streaming
+    this._stopLocalMicTracks();
 
-    // local tracks
+    // 2) Keep RTP m=audio alive (no renegotiation / no UI flap) by sending silence
+    this._replaceSenderTrackOnAllPcs(null).catch(() => { });
+
+    // 3) Belt-and-suspenders: disable any residual audio tracks still hanging off localStream
     if (this._localStream) {
-      for (const t of this._localStream.getAudioTracks()) {
-        if (!seen.has(t)) { try { t.enabled = false; } catch { } seen.add(t); }
-      }
-    }
-    // sender tracks
-    for (const pc of this._pcs.values()) {
-      const s = this._getAudioSender(pc);
-      const t = s && s.track;
-      if (t && !seen.has(t)) { try { t.enabled = false; } catch { } seen.add(t); }
+      try {
+        this._localStream.getAudioTracks().forEach(t => { try { t.enabled = false; } catch { } });
+      } catch { }
     }
   }
+
 
   hideVideo() { this._setVideoEnabled(false); }
   showVideo() {
