@@ -186,8 +186,10 @@ function applyMute(wantMuted) {
             // ✅ add these two lines right after setting micMuted = true
             persistedState.micMuted = micMuted;
             saveState();
+            startVoiceRecognition();
             msg('System', 'Microphone muted.');
         } else {
+            stopVoiceRecognition();
             // may need to reacquire mic; unmute() is async
             Promise.resolve(s.unmute()).catch(() => msg('System', 'Failed to unmute mic'));
             micMuted = false;
@@ -496,14 +498,13 @@ elBtnStream.addEventListener('click', async () => {
 });
 
 elBtnMute.addEventListener('click', async () => {
-    if (!isServerConnected || !streamActive) { msg('System', 'Stream not active'); return; }
+    if (!isServerConnected || !streamActive) {
+        msg('System', 'Stream not active');
+        return;
+    }
 
-    // Read the actual mic state (device.js exposes isMicMuted)
-    const s = ensureStreamer();
-    const actuallyMuted = (typeof s.isMicMuted === 'function') ? s.isMicMuted() : micMuted;
-
-    // Decide desired state and control command
-    const wantMuted = !actuallyMuted ? true : false;
+    // Decide desired state from UI's own source of truth
+    const wantMuted = !micMuted;
     const command = wantMuted ? 'mute' : 'unmute';
 
     // 1) Apply locally immediately (Android parity)
@@ -512,7 +513,6 @@ elBtnMute.addEventListener('click', async () => {
     // 2) Notify connected desktops (same as voice path)
     for (const targetId of connectedDesktops) {
         emitSafe('control', { from: ANDROID_XR_ID, to: targetId, command, action: command });
-
     }
 });
 
