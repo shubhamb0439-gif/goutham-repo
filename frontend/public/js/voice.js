@@ -43,10 +43,10 @@ export class VoiceController {
     this.partialThrottleMs = Number.isFinite(opts.partialThrottleMs)
       ? opts.partialThrottleMs : 800;
 
-    this.onCommand = typeof opts.onCommand === 'function' ? opts.onCommand : () => {};
-    this.onTranscript = typeof opts.onTranscript === 'function' ? opts.onTranscript : () => {};
-    this.onListenStateChange = typeof opts.onListenStateChange === 'function' ? opts.onListenStateChange : () => {};
-    this.onError = typeof opts.onError === 'function' ? opts.onError : () => {};
+    this.onCommand = typeof opts.onCommand === 'function' ? opts.onCommand : () => { };
+    this.onTranscript = typeof opts.onTranscript === 'function' ? opts.onTranscript : () => { };
+    this.onListenStateChange = typeof opts.onListenStateChange === 'function' ? opts.onListenStateChange : () => { };
+    this.onError = typeof opts.onError === 'function' ? opts.onError : () => { };
 
     this._customMap = Array.isArray(opts.customMap) ? opts.customMap : [];
 
@@ -97,7 +97,7 @@ export class VoiceController {
 
   stop() {
     if (!this._rec) return;
-    try { this._rec.stop(); } catch {}
+    try { this._rec.stop(); } catch { }
     this._listening = false;
     this.onListenStateChange(false);
     // If we were in note mode, finalize
@@ -105,7 +105,7 @@ export class VoiceController {
   }
 
   destroy() {
-    try { this.stop(); } catch {}
+    try { this.stop(); } catch { }
     this._rec = null;
   }
 
@@ -186,14 +186,14 @@ export class VoiceController {
     // Auto-restart on recoverable errors
     const recoverable = ['no-speech', 'aborted', 'audio-capture', 'network'];
     if (this._listening && recoverable.includes(code)) {
-      try { this._rec.start(); } catch {}
+      try { this._rec.start(); } catch { }
     }
   }
 
   _onEnd() {
     // Chrome fires onend frequently; auto-restart if we want to keep listening
     if (this._listening) {
-      try { this._rec.start(); } catch {}
+      try { this._rec.start(); } catch { }
     } else {
       this.onListenStateChange(false);
     }
@@ -260,5 +260,35 @@ export class VoiceController {
     return null;
   }
 }
+
+// ---- ASR control helpers for UI (safe, additive) ----
+// Allow UI to start/stop recognition without needing a direct ref.
+// We look for a globally stored instance: window.voiceController or window.voice.
+export function startRecognition() {
+  try {
+    const inst = (typeof window !== 'undefined') && (window.voiceController || window.voice);
+    if (inst && typeof inst.start === 'function') inst.start();
+  } catch { }
+}
+
+export function stopRecognition() {
+  try {
+    const inst = (typeof window !== 'undefined') && (window.voiceController || window.voice);
+    if (inst && typeof inst.stop === 'function') inst.stop();
+  } catch { }
+}
+
+// Optional: if a voice instance already exists on window, add helpers onto it.
+// This does not override existing start()/stop(); it just adds new methods.
+try {
+  if (typeof window !== 'undefined') {
+    const inst = window.voiceController || window.voice;
+    if (inst && typeof inst === 'object') {
+      inst.startRecognition = startRecognition;
+      inst.stopRecognition = stopRecognition;
+    }
+  }
+} catch { }
+
 
 export default VoiceController;
