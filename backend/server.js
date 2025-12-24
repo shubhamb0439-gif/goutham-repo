@@ -120,7 +120,7 @@ const sessionSecret = process.env.SESSION_SECRET || 'change-me-in-production';
 // ✅ Persist sessions in production so logins survive app restarts / multi-instance routing
 let sessionStore = undefined;
 
-if (IS_PROD) {
+if (process.env.NODE_ENV === 'production') {
   // Requires: npm i connect-session-sequelize
   const SequelizeStoreFactory = require('connect-session-sequelize');
   const SequelizeStore = SequelizeStoreFactory(session.Store);
