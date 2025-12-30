@@ -94,21 +94,68 @@ const IS_PROD =
 console.log('[INIT] Starting server initialization...');
 const PORT = process.env.PORT || 8080;
 console.log(`[CONFIG] Using port: ${PORT}`);
+
+// (DO NOT redeclare IS_PROD here — use the one already defined above)
+
 const app = express();
+
+// Azure App Service runs behind a reverse proxy (TLS terminated upstream)
+if (IS_PROD) {
+  app.set('trust proxy', 1);
+}
+
 const server = http.createServer(app);
 console.log('[HTTP] Server created');
+
 const io = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST'] },
-  transports: ['websocket', 'polling'],   // ← include polling
+  transports: ['websocket', 'polling'], // include polling
   allowEIO3: true,
   pingInterval: 25000,
   pingTimeout: 30000,
 });
+
 console.log('[SOCKET.IO] Socket.IO server initialized');
+
+
 // -------------------- Middleware --------------------
 app.use(cors());
 app.use(express.json());
 console.log('[MIDDLEWARE] CORS + JSON enabled');
+
+// -------------------- Session Store (Prod: Redis) --------------------
+let sessionStore;
+
+if (process.env.NODE_ENV === 'production' && process.env.REDIS_URL) {
+  const connectRedis = require('connect-redis');
+  const RedisStore = connectRedis.default ? connectRedis.default : connectRedis;
+
+  const sessionRedis = createClient({
+    url: process.env.REDIS_URL,
+    socket: {
+      tls: (process.env.REDIS_URL || '').startsWith('rediss://'),
+    },
+  });
+
+  sessionRedis.on('error', (err) =>
+    console.error('[SESSION][REDIS] error', err)
+  );
+
+  sessionRedis.connect().then(
+    () => console.log('[SESSION][REDIS] connected'),
+    (err) =>
+      console.error(
+        '[SESSION][REDIS] connect failed (continuing)',
+        err?.message || err
+      )
+  );
+
+  sessionStore = new RedisStore({
+    client: sessionRedis,
+    prefix: 'sess:',
+  });
+}
+
 
 // Session middleware for platform admin
 const sessionSecret = process.env.SESSION_SECRET || 'change-me-in-production';
@@ -117,13 +164,25 @@ app.use(
     secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
+
+    // ✅ critical for Azure scale-out / restarts
+    store: sessionStore || undefined,
+
+    // helps when behind proxy (pairs with trust proxy)
+    proxy: IS_PROD,
+
     cookie: {
       httpOnly: true,
-      sameSite: 'lax',
+
+      // ✅ REQUIRED for HTTPS + Azure proxy
+      sameSite: IS_PROD ? 'none' : 'lax',
+      secure: IS_PROD,
+
       maxAge: 24 * 60 * 60 * 1000,
     },
   })
 );
+
 console.log('[MIDDLEWARE] Session enabled');
 
 // ✅ Connect to Azure SQL via Sequelize on boot (non-fatal if it fails)
