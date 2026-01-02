@@ -492,9 +492,22 @@ async function tryDbAutoPair(deviceId) {
   dlog('[DB_AUTO_PAIR] attempt for', deviceId);
 
   if (isAlreadyPaired(deviceId)) {
-    dlog('[DB_AUTO_PAIR] already paired:', deviceId, '->', pairedWith.get(normXr(deviceId)));
-    return false;
+    const stalePartner = clearPairByXrId(deviceId);
+    dlog('[DB_AUTO_PAIR] cleared stale pairing for', deviceId, 'oldPartner=', stalePartner);
+
+    // Also clear stale socket roomId state (safe even if already null)
+    const meSock = getClientSocketByXrIdCI(deviceId);
+    if (meSock) meSock.data.roomId = null;
+
+    if (stalePartner) {
+      const pSock = getClientSocketByXrIdCI(stalePartner);
+      if (pSock) pSock.data.roomId = null;
+    }
+
+    // Do NOT return; continue attempting fresh DB pairing
   }
+
+
 
   const myUserId = await resolveUserIdByXrId(deviceId);
   dlog('[DB_AUTO_PAIR] myUserId:', myUserId);
@@ -528,8 +541,8 @@ async function tryDbAutoPair(deviceId) {
   const roomId = getRoomIdForPair(deviceId, partnerXr);
   const room = io.sockets.adapter.rooms.get(roomId);
   const memberCount = room ? room.size : 0;
-  dlog('[DB_AUTO_PAIR] roomId:', roomId, 'current members:', memberCount);
-  if (memberCount >= 2) return false;
+  dlog('[DB_AUTO_PAIR] roomId:', roomId, 'current members:', memberCount, '(not used to block pairing)');
+
 
   await meSocket.join(roomId);
   await partnerSocket.join(roomId);
@@ -544,8 +557,7 @@ async function tryDbAutoPair(deviceId) {
 
   const members = listRoomMembers(roomId);
   io.to(roomId).emit('room_joined', { roomId, members });
-  meSocket.emit('room_joined', { roomId, members });
-  partnerSocket.emit('room_joined', { roomId, members });
+
 
   broadcastPairs();
   return true;
@@ -3432,7 +3444,7 @@ io.on('connection', (socket) => {
     // ✅ normalize once (Option B)
     const XR = normXr(xrId);
 
-    // 🔒 GLOBAL duplicate guard
+    // 🔒 Duplicate xrId handling (NEWEST WINS): if an old socket exists, kick it and accept this one.
     try {
       const all = await safeFetchSockets(io, "/");
       const holder = all.find(s =>
@@ -3448,29 +3460,34 @@ io.on('connection', (socket) => {
           since: holder.data?.connectedAt || null,
           socketId: holder.id,
         };
-        dlog('[IDENTIFY] Duplicate xrId in use — rejecting:', holderInfo);
+        dlog('[IDENTIFY] Duplicate xrId detected — disconnecting old socket, keeping new:', holderInfo);
 
-        broadcastEmptyDeviceListOnce();
+        // Clear stale pairing state for this XR (and its partner) so re-pair works cleanly
+        clearPairByXrId(XR);
 
-        setTimeout(async () => {
-          try { await broadcastDeviceList(); }
-          catch (e) { dwarn('[DEVICE_LIST] delayed re-broadcast failed:', e.message); }
-        }, 1200);
-
-        socket.emit('duplicate_id', { xrId: XR, holderInfo });
-        return socket.disconnect(true);
+        // Best-effort: disconnect the old socket
+        try {
+          try { holder.data.roomId = null; } catch { }
+          holder.emit('replaced_by_new_session', { xrId: XR });
+        } catch { }
+        try {
+          holder.disconnect(true);
+        } catch (e) {
+          dwarn('[IDENTIFY] failed to disconnect old holder:', e?.message || e);
+        }
       }
     } catch (e) {
       dwarn('[IDENTIFY] fetchSockets failed; continuing cautiously:', e?.message || e);
     }
+
 
     // ✅ Accept this socket
     socket.data.deviceName = deviceName || 'Unknown';
     socket.data.xrId = XR;
     socket.data.connectedAt = Date.now();
 
-    try { await socket.join(roomOf(XR)); }
-    catch (e) { dwarn('[IDENTIFY] join room failed:', e?.message || e); }
+    // try { await socket.join(roomOf(XR)); }
+    // catch (e) { dwarn('[IDENTIFY] join room failed:', e?.message || e); }
 
     clients.set(XR, socket);
     onlineDevices.set(XR, socket);
@@ -3500,7 +3517,6 @@ io.on('connection', (socket) => {
       derr('[identify] tryDbAutoPair error:', e.message);
     }
   });
-
 
   // -------- metrics_subscribe / unsubscribe (NEW) --------
   socket.on('metrics_subscribe', ({ xrId }) => {
@@ -3611,7 +3627,10 @@ io.on('connection', (socket) => {
           });
 
           // Broadcast to dashboards (powers the connection tiles)
-          io.emit('webrtc_quality_update', { deviceId, samples });
+          // Option B: route quality updates only to the paired room (no global emit)
+          const roomId = socket.data?.roomId;
+          if (roomId) io.to(roomId).emit('webrtc_quality_update', { deviceId, samples });
+
         }
         return; // ✅ do not route as a regular signaling message
       }
@@ -3619,7 +3638,12 @@ io.on('connection', (socket) => {
       // 3) offer/answer/ICE path (Option B: strict pair-room only)
 
       // ✅ Always trust socket identity, never payload
-      const from = socket.data?.xrId || msg.from;
+      const from = socket.data?.xrId;
+      if (!from) {
+        dwarn('[signal] missing socket.data.xrId; ignoring');
+        return;
+      }
+
       const data = msg.data;
 
       // ✅ OPTIONAL but recommended: allowlist only WebRTC signaling types from clients
@@ -3661,7 +3685,12 @@ io.on('connection', (socket) => {
     // Accept both `command` and `action`; keep original casing for compatibility
     const cmdRaw = (p.command != null ? p.command : p.action) || '';
     const cmd = String(cmdRaw);
-    const from = socket.data?.xrId || p.from;
+    const from = socket.data?.xrId;
+    if (!from) {
+      dwarn('[control] missing socket.data.xrId; ignoring');
+      return;
+    }
+
     const to = p.to;
     const msg = p.message;
 
@@ -3702,7 +3731,12 @@ io.on('connection', (socket) => {
     }
 
     const type = data?.type || 'message';
-    const from = socket.data?.xrId || data?.from;
+    const from = socket.data?.xrId;
+    if (!from) {
+      dwarn('[message] missing socket.data.xrId; ignoring');
+      return;
+    }
+
     const to = data?.to;
     const text = data?.text;
     const urgent = !!data?.urgent;
@@ -3716,7 +3750,7 @@ io.on('connection', (socket) => {
       const out = {
         type: 'transcript',
         from,
-        to,
+        to: null,
         text,
         final: !!data?.final,
         timestamp,
@@ -3787,7 +3821,7 @@ io.on('connection', (socket) => {
       const msg = {
         type: 'message',
         from,
-        to,
+        to: null,
         text,
         urgent,
         sender: socket.data?.deviceName || from || 'unknown',
@@ -3809,6 +3843,7 @@ io.on('connection', (socket) => {
       derr('[message] handler error:', err.message);
     }
   });
+
 
 
 
@@ -4021,6 +4056,7 @@ io.on('connection', (socket) => {
 
 
 
+
   // Final cleanup and presence broadcast
   socket.on('disconnect', async (reason) => {
     dlog('❎ [EVENT] disconnect', {
@@ -4035,6 +4071,9 @@ io.on('connection', (socket) => {
         // Remove from your in-memory maps
         clients.delete(xrId);
         onlineDevices.delete(xrId);
+
+        // ✅ Clear authoritative room routing for this socket
+        socket.data.roomId = null;
 
         // ✅ Option B: release one-to-one lock (do this ONCE)
         const partner = clearPairByXrId(xrId);
