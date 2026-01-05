@@ -170,12 +170,18 @@ const elBtnSend = document.getElementById('btnSend');
 // Initialise Device XR ID input from localStorage or default
 if (elDeviceXrIdInput) {
     try {
-        const stored = localStorage.getItem('xr-device-id');
-        const initialId = normalizeXrId(stored || ANDROID_XR_ID);
-        // Show only the numeric part to the user (like Dock’s "1234")
-        elDeviceXrIdInput.value = initialId.replace(/^XR-/, '');
-        ANDROID_XR_ID = initialId;
-        window.XR_DEVICE_ID = ANDROID_XR_ID;
+        const sessionXrId = sessionStorage.getItem('xr-device-id');
+        if (sessionXrId) {
+            ANDROID_XR_ID = normalizeXrId(sessionXrId);
+            elDeviceXrIdInput.value = ANDROID_XR_ID.replace(/^XR-/, '');
+            window.XR_DEVICE_ID = ANDROID_XR_ID;
+        } else {
+            elDeviceXrIdInput.value = '';
+            ANDROID_XR_ID = '';
+            window.XR_DEVICE_ID = '';
+        }
+
+
     } catch {
         elDeviceXrIdInput.value = (ANDROID_XR_ID || '').replace(/^XR-/, '');
     }
@@ -226,7 +232,10 @@ function emitSafe(event, data) {
 
 
 // ---- Persistence (localStorage) ----
-const STORAGE_KEY = 'xr-pwa-ui-state.v1';
+function stateKeyForXr(xrId) {
+    return xrId ? `xr-pwa-ui-state:${xrId}` : null;
+}
+
 let persistedState = {
     messages: [],             // { sender, text, timestamp, xrId, urgent }
     connectedDesktops: [],    // e.g. ['XR-1238']
@@ -236,21 +245,38 @@ let persistedState = {
 };
 let _rehydrating = false, _saveTimer = null;
 function saveState(throttleMs = 300) {
-    if (_rehydrating) return;
+    if (_rehydrating || !ANDROID_XR_ID) return;
+    const key = stateKeyForXr(ANDROID_XR_ID);
+    if (!key) return;
+
     clearTimeout(_saveTimer);
     _saveTimer = setTimeout(() => {
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(persistedState)); } catch { }
+        try { localStorage.setItem(key, JSON.stringify(persistedState)); } catch { }
     }, throttleMs);
 }
-function persistNow() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(persistedState)); } catch { } }
+
+function persistNow() {
+    if (_rehydrating || !ANDROID_XR_ID) return;
+    const key = stateKeyForXr(ANDROID_XR_ID);
+    if (!key) return;
+    try { localStorage.setItem(key, JSON.stringify(persistedState)); } catch { }
+}
+
 function loadState() {
+    if (!ANDROID_XR_ID) return;
+    const key = stateKeyForXr(ANDROID_XR_ID);
+    if (!key) return;
+
     try {
-        const raw = localStorage.getItem(STORAGE_KEY);
+        const raw = localStorage.getItem(key);
         if (!raw) return;
         const parsed = JSON.parse(raw);
-        for (const k of Object.keys(persistedState)) if (k in parsed) persistedState[k] = parsed[k];
+        for (const k of Object.keys(persistedState)) {
+            if (k in parsed) persistedState[k] = parsed[k];
+        }
     } catch { }
 }
+
 
 // ---- Auto-reload on disconnect (safe + interval-guarded) ----
 const AUTO_RELOAD_ON_DISCONNECT = true;
@@ -294,8 +320,10 @@ function msg(sender, text) {
     appendMessage(elMsgList, m);
     elMsgList.scrollTop = elMsgList.scrollHeight;
 
-    // ⬇️ add this block
+    // ✅ only persist messages when an XR session is active
     try {
+        if (!ANDROID_XR_ID) return;
+
         const N = 200; // cap to avoid storage bloat
         persistedState.messages.push({ sender, text, timestamp: m.timestamp, xrId: ANDROID_XR_ID, urgent: false });
         if (persistedState.messages.length > N) {
@@ -304,6 +332,7 @@ function msg(sender, text) {
         saveState();
     } catch { }
 }
+
 
 function setStatus(connected) {
     elStatus.textContent = connected ? 'Status: Connected' : 'Status: Disconnected';
@@ -394,7 +423,22 @@ function createSignaling() {
             startBatteryTicker();
         },
 
+
+
         onDisconnected: () => {
+
+            // 🔥 CLEAR XR DEVICE ID AND UI STATE ON DISCONNECT (CRITICAL)
+            try {
+                sessionStorage.removeItem('xr-device-id');
+            } catch { }
+
+            ANDROID_XR_ID = '';
+            window.XR_DEVICE_ID = '';
+
+            if (elDeviceXrIdInput) {
+                elDeviceXrIdInput.value = '';
+            }
+
             isServerConnected = false;
 
             userWantsConnected = false; // prevent auto-reconnect after a manual disconnect
@@ -571,21 +615,35 @@ elBtnConnect.addEventListener('click', async () => {
         notifyReadOnlyDevice();
         return;
     }
+
     // Prefer the client’s own state if available; fall back to our flag
     const connected = (typeof signaling?.isConnectedNow === 'function')
         ? signaling.isConnectedNow()
         : !!isServerConnected;
 
+    // =========================
+    // DISCONNECT FLOW
+    // =========================
     if (connected) {
         userWantsConnected = false;
+
         // ✅ persist disconnect intent
         persistedState.userWantsConnected = false;
         saveState();
         msg('System', 'Disconnecting…');
 
+        // ✅ Clear tab-scoped XR identity on disconnect
+        try { sessionStorage.removeItem('xr-device-id'); } catch { }
+        ANDROID_XR_ID = '';
+        window.XR_DEVICE_ID = '';
+        if (elDeviceXrIdInput) elDeviceXrIdInput.value = '';
+
         // stop stream first so peers close cleanly
         try {
-            if (streamActive) { await ensureStreamer().stopStreaming(); streamActive = false; }
+            if (streamActive) {
+                await ensureStreamer().stopStreaming();
+                streamActive = false;
+            }
         } catch { }
 
         connectedDesktops = [];
@@ -597,12 +655,13 @@ elBtnConnect.addEventListener('click', async () => {
 
         // reflect immediately; onDisconnected will also run
         isServerConnected = false;
-
         setStatus(false);
         return;
     }
 
-    // ---- NOT CONNECTED → require XR Device ID first ----
+    // =========================
+    // CONNECT FLOW
+    // =========================
     // ---- NOT CONNECTED → require XR Device ID first ----
     if (elDeviceXrIdInput) {
         const raw = (elDeviceXrIdInput.value || '').trim();
@@ -614,25 +673,33 @@ elBtnConnect.addEventListener('click', async () => {
             return;
         }
 
+        // ✅ single authoritative XR assignment (session-scoped)
+        const xrId = normalized;
+        ANDROID_XR_ID = xrId;
+        window.XR_DEVICE_ID = xrId;
 
-        ANDROID_XR_ID = normalized;          // will be XR-1234
-        window.XR_DEVICE_ID = ANDROID_XR_ID;
-        try {
-            localStorage.setItem('xr-device-id', ANDROID_XR_ID);
-        } catch { /* ignore */ }
+        // 🔐 session-only identity (per tab, per refresh)
+        try { sessionStorage.setItem('xr-device-id', xrId); } catch { }
 
-        msg('System', `Using XR Device ID [${ANDROID_XR_ID}].`);
+        // ❌ ensure no global leakage from previous versions
+        try { localStorage.removeItem('xr-device-id'); } catch { }
+
+        msg('System', `Using XR Device ID [${xrId}].`);
     }
 
-    // Not connected → connect
+    // ---- proceed with connection ----
     userWantsConnected = true;
     persistedState.userWantsConnected = true;
     saveState();
+
     msg('System', 'Connecting…');
     createSignaling();
     ensureStreamer();
     // bind preview element
 });
+
+
+
 
 
 
