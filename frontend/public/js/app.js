@@ -716,13 +716,13 @@ function initSocket() {
     socket.on('room_joined', ({ roomId, members }) => {
         console.log('[PAIR] room_joined:', roomId, members);
 
-        // 1) Authoritative room routing
         currentRoom = roomId;
-
-        // ✅ FIX: pairing complete = connected
         setStatus('Connected');
 
-        // 2) Determine peer safely
+        // ✅ One call is enough (works even if members is missing)
+        try { socket?.emit('request_device_list'); } catch { }
+
+        // derive peer
         try {
             const me = normalizeId(XR_ID);
             const other = Array.isArray(members)
@@ -730,10 +730,6 @@ function initSocket() {
                 : null;
             pairedPeerId = other || null;
             console.log('[PAIR] pairedPeerId =', pairedPeerId);
-
-            // ✅ NEW: immediately ask server for fresh room-scoped device list (no refresh needed)
-            try { socket?.emit('request_device_list'); } catch (e) { console.warn('[DEVICES] request_device_list failed:', e); }
-
         } catch (e) {
             console.warn('[PAIR] failed to derive pairedPeerId:', e);
             pairedPeerId = null;
