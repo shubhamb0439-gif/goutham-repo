@@ -84,7 +84,7 @@ export class SignalingClient {
     };
 
     this._manualClose = false;
-    this.socket = this.io(this.serverUrl, opts);
+    this.socket = this.io(opts);
 
     // Core lifecycle
     this.socket.on('connect', this._onConnect);
@@ -301,15 +301,8 @@ export class SignalingClient {
   }
 
 
-  _onDeviceList(payload) {
-    // Supports both formats:
-    // 1) device_list: [ ... ]
-    // 2) device_list: { roomId, devices: [ ... ] }
-    const arr = Array.isArray(payload) ? payload : payload?.devices;
+  _onDeviceList(arr) {
     if (!Array.isArray(arr)) return;
-
-    // Optional room safety: ignore lists for other rooms (if server includes roomId)
-    if (payload?.roomId && this.roomId && payload.roomId !== this.roomId) return;
     const list = [];
     let desktopOnline = false;
 

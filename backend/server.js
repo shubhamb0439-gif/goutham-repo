@@ -3458,8 +3458,8 @@ io.on('connection', (socket) => {
   (async () => {
     try {
       // send current presence snapshot
-      socket.emit('device_list', []); // ✅ don’t leak global list before identify/pairing
-
+      const list = await buildDeviceListGlobal();
+      socket.emit('device_list', list);
 
       // send current active pair snapshot
       socket.emit('room_update', { pairs: collectPairs() });
@@ -3471,37 +3471,20 @@ io.on('connection', (socket) => {
   // -------- join --------
   socket.on('join', (xrId) => {
     dlog('[EVENT] join', xrId);
-
-    const XR = normXr(xrId);
-    if (!XR) {
-      socket.emit('device_list', []);
-      return;
-    }
-
-    socket.data.xrId = XR;
-    socket.join(roomOf(XR));
-    clients.set(XR, socket);
-    onlineDevices.set(XR, socket);
-
+    socket.data.xrId = xrId;
+    socket.join(roomOf(xrId));
+    clients.set(xrId, socket);
+    onlineDevices.set(xrId, socket);
     (async () => {
       try {
-        const b = batteryByDevice?.get(XR) || {};
-        const t = telemetryByDevice?.get(XR) || null;
-
-        socket.emit('device_list', [{
-          xrId: XR,
-          deviceName: socket.data?.deviceName || 'Unknown',
-          battery: (typeof b.pct === 'number') ? b.pct : null,
-          charging: !!b.charging,
-          batteryTs: b.ts || null,
-          ...(t ? { telemetry: t } : {}),
-        }]);
+        const list = await buildDeviceListGlobal();
+        socket.emit('device_list', list);
+        await broadcastDeviceList();
       } catch (e) {
-        derr('[join] device_list err:', e.message);
+        derr('[join] broadcast err:', e.message);
       }
     })();
   });
-
 
 
   // -------- identify --------
@@ -3536,23 +3519,8 @@ io.on('connection', (socket) => {
         };
         dlog('[IDENTIFY] Duplicate xrId detected — disconnecting old socket, keeping new:', holderInfo);
 
-        // Capture old partner BEFORE clearing pairing state
-        const oldPartner = pairedWith.get(XR);
-
-        // Clear stale pairing state for this XR (and its partner)
+        // Clear stale pairing state for this XR (and its partner) so re-pair works cleanly
         clearPairByXrId(XR);
-
-        // ✅ ALSO clear partner's socket roomId if we had an old pairing
-        try {
-          if (oldPartner) {
-            const partnerSock = getClientSocketByXrIdCI(oldPartner);
-            if (partnerSock) partnerSock.data.roomId = null;
-          }
-        } catch { }
-
-
-
-
 
         // Best-effort: disconnect the old socket
         try {

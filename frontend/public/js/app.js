@@ -667,9 +667,7 @@ function initSocket() {
         manualDisconnect = false; // reset the latch
 
         // do not clear AUTO_KEY; preserves refresh auto-connect if enabled
-        lastDeviceList = [];
-        pairedPeerId = null;
-        updateDeviceList([]);
+        updateDeviceList(lastDeviceList);
         announcePresence('idle');
 
 
@@ -704,24 +702,7 @@ function initSocket() {
     // --- your existing handlers ---
     socket.on('signal', handleSignalMessage);
     socket.on('message', handleChatMessage);
-    socket.on('device_list', (payload) => {
-        // Supports both formats:
-        // 1) device_list: [ {xrId, deviceName}, ... ]
-        // 2) device_list: { roomId, devices: [ ... ] }
-        const list = Array.isArray(payload) ? payload : payload?.devices;
-
-        // Optional room-safety: ignore lists for other rooms (if server sends roomId)
-        if (!Array.isArray(list)) {
-            console.error('[DEVICES] device_list payload unexpected:', payload);
-            return;
-        }
-        if (payload && payload.roomId && currentRoom && payload.roomId !== currentRoom) {
-            return;
-        }
-
-        updateDeviceList(list);
-    });
-
+    socket.on('device_list', updateDeviceList);
     socket.on('control', handleControlCommand);
     socket.on('message-cleared', handleMessagesCleared);
     socket.on('message_history', handleMessageHistory);
@@ -735,35 +716,35 @@ function initSocket() {
     socket.on('room_joined', ({ roomId, members }) => {
         console.log('[PAIR] room_joined:', roomId, members);
 
+        // 1) Authoritative room routing
         currentRoom = roomId;
+
+        // ✅ FIX: pairing complete = connected
         setStatus('Connected');
 
-
-        // derive peer
+        // 2) Determine peer safely
         try {
             const me = normalizeId(XR_ID);
             const other = Array.isArray(members)
                 ? members.map(normalizeId).find(m => m && m !== me)
                 : null;
-            // ✅ Only set if we found a peer; otherwise keep existing (device_list can infer later)
-            if (other) pairedPeerId = other;
+            pairedPeerId = other || null;
             console.log('[PAIR] pairedPeerId =', pairedPeerId);
+
+            // ✅ NEW: immediately ask server for fresh room-scoped device list (no refresh needed)
+            try { socket?.emit('request_device_list'); } catch (e) { console.warn('[DEVICES] request_device_list failed:', e); }
+
         } catch (e) {
             console.warn('[PAIR] failed to derive pairedPeerId:', e);
-            // ✅ Do not forcibly clear; allow device_list inference to recover
-            // pairedPeerId remains as-is
+            pairedPeerId = null;
         }
 
         // 3) Safe message (members may be undefined during races)
         const memList = Array.isArray(members) ? members.join(', ') : '';
         addSystemMessage(`🎯 VR Room created: ${roomId}.${memList ? ` Members: ${memList}` : ''}`);
 
-        // 4) Re-render device list deterministically:
-        // - clear stale list immediately (prevents "old peer still visible")
-        // - then request fresh list from server
-        updateDeviceList([]); // ✅ clears UI instantly after pairing event
-        try { socket?.emit('request_device_list'); } catch { }
-
+        // 4) Re-render device list (unchanged)
+        updateDeviceList(lastDeviceList || []);
 
         // ✅ Flush any WebRTC payloads that were created before room_joined existed
         if (pendingLocalAnswer && socket?.connected) {
@@ -827,17 +808,11 @@ function initSocket() {
         console.log('[PAIR] peer_left', xrId, roomId);
         if (currentRoom === roomId) {
             addSystemMessage(`${xrId} left the room.`);
-
-            currentRoom = null;
-            pairedPeerId = null;
-            lastDeviceList = [];
-
+            currentRoom = null; // ensure we don’t keep signaling into an empty room
             stopStream();
-
-            // ✅ Immediately clear UI list (no stale carryover)
-            updateDeviceList([]);
+            // ✅ refresh list so it stops filtering to a stale pair
+            if (lastDeviceList) updateDeviceList(lastDeviceList);
         }
-
     });
 }
 
@@ -1503,28 +1478,10 @@ function updateDeviceList(devices) {
     deviceListElement.innerHTML = '';
 
     const myId = XR_ID;
-    let peerId = pairedPeerId;
-
+    const peerId = pairedPeerId;
 
     // ✅ Option B UI: once room exists, show only self + paired peer
     const wantOnlyPair = true; // ✅ Always restrict visibility (self-only before pairing, pair-only after)
-
-    // ✅ Fix: if we are already paired (room exists) but pairedPeerId is not set yet,
-    // infer the peer from the incoming device list so we don't hide them.
-    if (typeof currentRoom !== 'undefined' && currentRoom && !peerId) {
-        const meNorm = normalizeId(myId);
-
-        const inferred = devices
-            .map(d => normalizeId(d?.xrId))
-            .find(id => id && id !== meNorm);
-
-        if (inferred) {
-            pairedPeerId = inferred; // persist for future calls
-            peerId = inferred;       // use in this call
-            console.log('[PAIR] Inferred pairedPeerId from device_list =', peerId);
-        }
-    }
-
 
     const allowed = new Set([normalizeId(myId), normalizeId(peerId)].filter(Boolean));
 
@@ -1564,10 +1521,9 @@ function updateDeviceList(devices) {
     }
 
     // Keep your existing log
-    if (socket && socket.connected && currentRoom && peerId && devices.length > 0 && !peerOnline) {
+    if (peerId && !peerOnline) {
         console.log(`[PAIR] Peer (${peerId}) is not online yet — waiting`);
     }
-
 }
 
 
