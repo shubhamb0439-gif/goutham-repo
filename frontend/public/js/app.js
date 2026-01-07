@@ -667,7 +667,9 @@ function initSocket() {
         manualDisconnect = false; // reset the latch
 
         // do not clear AUTO_KEY; preserves refresh auto-connect if enabled
-        updateDeviceList(lastDeviceList);
+        lastDeviceList = [];
+        pairedPeerId = null;
+        updateDeviceList([]);
         announcePresence('idle');
 
 
@@ -702,7 +704,24 @@ function initSocket() {
     // --- your existing handlers ---
     socket.on('signal', handleSignalMessage);
     socket.on('message', handleChatMessage);
-    socket.on('device_list', updateDeviceList);
+    socket.on('device_list', (payload) => {
+        // Supports both formats:
+        // 1) device_list: [ {xrId, deviceName}, ... ]
+        // 2) device_list: { roomId, devices: [ ... ] }
+        const list = Array.isArray(payload) ? payload : payload?.devices;
+
+        // Optional room-safety: ignore lists for other rooms (if server sends roomId)
+        if (!Array.isArray(list)) {
+            console.error('[DEVICES] device_list payload unexpected:', payload);
+            return;
+        }
+        if (payload && payload.roomId && currentRoom && payload.roomId !== currentRoom) {
+            return;
+        }
+
+        updateDeviceList(list);
+    });
+
     socket.on('control', handleControlCommand);
     socket.on('message-cleared', handleMessagesCleared);
     socket.on('message_history', handleMessageHistory);
