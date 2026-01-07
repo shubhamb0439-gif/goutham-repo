@@ -1564,9 +1564,10 @@ function updateDeviceList(devices) {
     }
 
     // Keep your existing log
-    if (socket && socket.connected && typeof currentRoom !== 'undefined' && currentRoom && peerId && !peerOnline) {
+    if (socket && socket.connected && currentRoom && peerId && devices.length > 0 && !peerOnline) {
         console.log(`[PAIR] Peer (${peerId}) is not online yet — waiting`);
     }
+
 }
 
 
