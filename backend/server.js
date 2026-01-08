@@ -409,6 +409,15 @@ function listRoomMembers(roomId) {
   return members;
 }
 
+function parsePairRoom(roomId) {
+  // roomId: "pair:XR-9001:XR-9002"
+  if (!roomId || typeof roomId !== 'string') return [];
+  if (!roomId.startsWith('pair:')) return [];
+  const parts = roomId.split(':'); // ["pair","XR-9001","XR-9002"]
+  if (parts.length < 3) return [];
+  return [normXr(parts[1]), normXr(parts[2])].filter(Boolean);
+}
+
 function collectPairs() {
   const pairs = [];
   for (const [roomId] of io.sockets.adapter.rooms) {
@@ -423,11 +432,33 @@ function collectPairs() {
   return pairs;
 }
 
-function broadcastPairs() {
-  const pairs = collectPairs();
-  io.emit('room_update', { pairs });
-  dlog('[PAIR] broadcastPairs:', pairs);
+async function broadcastPairs() {
+  try {
+    let pairs = [];
+
+    if (redisPub) {
+      // 🔐 Redis is authoritative in prod
+      const keys = await redisPub.keys('xr:pair:*');
+
+      for (const key of keys) {
+        // key = xr:pair:XR-9001:XR-9002
+        const parts = String(key).split(':');
+        const a = parts[2];
+        const b = parts[3];
+        if (a && b) pairs.push({ a, b });
+      }
+    } else {
+      // Local / dev fallback
+      pairs = collectPairs();
+    }
+
+    io.emit('room_update', { pairs });
+    dlog('[PAIR] broadcastPairs:', pairs);
+  } catch (e) {
+    dwarn('[PAIR] broadcastPairs failed:', e?.message || e);
+  }
 }
+
 
 // ---- DB resolvers using Sequelize (you already use sequelize.query elsewhere) ----
 // NOTE: This assumes `sequelize` and `Sequelize` are in scope in server.js (they are in your existing routes).
@@ -489,82 +520,72 @@ async function resolveXrIdByUserId(userId) {
 }
 
 async function tryDbAutoPair(deviceId) {
-  dlog('[DB_AUTO_PAIR] attempt for', deviceId);
+  const meXr = normXr(deviceId);
+  dlog('[DB_AUTO_PAIR] attempt for', meXr);
 
-  if (isAlreadyPaired(deviceId)) {
-    const stalePartner = clearPairByXrId(deviceId);
-    dlog('[DB_AUTO_PAIR] cleared stale pairing for', deviceId, 'oldPartner=', stalePartner);
-
-    // Also clear stale socket roomId state (safe even if already null)
-    const meSock = getClientSocketByXrIdCI(deviceId);
-    if (meSock) meSock.data.roomId = null;
-
-    if (stalePartner) {
-      const pSock = getClientSocketByXrIdCI(stalePartner);
-      if (pSock) pSock.data.roomId = null;
-    }
-
-    // Do NOT return; continue attempting fresh DB pairing
-  }
-
-
-
-  const myUserId = await resolveUserIdByXrId(deviceId);
-  dlog('[DB_AUTO_PAIR] myUserId:', myUserId);
+  const myUserId = await resolveUserIdByXrId(meXr);
   if (!myUserId) return false;
 
   const partnerUserId = await resolvePartnerUserId(myUserId);
-  dlog('[DB_AUTO_PAIR] partnerUserId:', partnerUserId);
   if (!partnerUserId) return false;
 
   const partnerId = await resolveXrIdByUserId(partnerUserId);
-  dlog('[DB_AUTO_PAIR] partnerId:', partnerId);
   const partnerXr = normXr(partnerId);
-  if (!partnerXr) return false;
+  if (!partnerXr || partnerXr === meXr) return false;
 
-  const meXr = normXr(deviceId);
-  if (meXr === partnerXr) {
-    dlog('[DB_AUTO_PAIR] mapping points to self; refusing', { deviceId, partnerXr });
-    return false;
-  }
-
-  const meSocket = getClientSocketByXrIdCI(deviceId);
+  const meSocket = getClientSocketByXrIdCI(meXr);
   const partnerSocket = getClientSocketByXrIdCI(partnerXr);
-  dlog('[DB_AUTO_PAIR] me?', !!meSocket, 'partner?', !!partnerSocket);
   if (!meSocket || !partnerSocket) return false;
 
-  if (isAlreadyPaired(deviceId) || isAlreadyPaired(partnerXr)) {
-    dlog('[DB_AUTO_PAIR] one side already paired, skipping');
-    return false;
+  // 🔒 REDIS PAIR LOCK (authoritative, cross-instance)
+  const pairKey = `xr:pair:${[meXr, partnerXr].sort().join(':')}`;
+
+  if (redisPub) {
+    const locked = await redisPub.set(pairKey, '1', { NX: true, EX: 30 });
+    if (!locked) {
+      dlog('[DB_AUTO_PAIR] pair already locked by another instance', pairKey);
+      return false;
+    }
   }
 
-  const roomId = getRoomIdForPair(deviceId, partnerXr);
-  const room = io.sockets.adapter.rooms.get(roomId);
-  const memberCount = room ? room.size : 0;
-  dlog('[DB_AUTO_PAIR] roomId:', roomId, 'current members:', memberCount, '(not used to block pairing)');
+  try {
+    // Final safety check (local only)
+    if (pairedWith.has(meXr) || pairedWith.has(partnerXr)) {
+      dlog('[DB_AUTO_PAIR] local already paired, abort');
+      return false;
+    }
 
+    const roomId = getRoomIdForPair(meXr, partnerXr);
 
-  await meSocket.join(roomId);
-  await partnerSocket.join(roomId);
+    await meSocket.join(roomId);
+    await partnerSocket.join(roomId);
 
-  meSocket.data.roomId = roomId;
-  partnerSocket.data.roomId = roomId;
+    meSocket.data.roomId = roomId;
+    partnerSocket.data.roomId = roomId;
 
-  pairedWith.set(meXr, partnerXr);
-  pairedWith.set(partnerXr, meXr);
+    pairedWith.set(meXr, partnerXr);
+    pairedWith.set(partnerXr, meXr);
 
-  dlog('[DB_AUTO_PAIR] joined both to', roomId);
+    const members = [meXr, partnerXr];
+    dlog('[DB_AUTO_PAIR] paired', { roomId, members });
 
-  const members = listRoomMembers(roomId);
-  io.to(roomId).emit('room_joined', { roomId, members });
+    io.to(roomId).emit('room_joined', { roomId, members });
 
-  await broadcastDeviceList(roomId);
+    await broadcastDeviceList(roomId);
+    broadcastPairs();
 
-
-
-  broadcastPairs();
-  return true;
+    return true;
+  } catch (e) {
+    derr('[DB_AUTO_PAIR] failed:', e.message);
+    return false;
+  } finally {
+    // Release lock after room is established
+    if (redisPub) {
+      redisPub.del(pairKey).catch(() => { });
+    }
+  }
 }
+
 
 
 // -------------------- Utilities --------------------
@@ -578,109 +599,220 @@ dlog('[STATE] messageHistory initialized');
 
 
 
-async function buildDeviceListGlobal() {
-  dlog('[DEVICE_LIST] building (global via fetchSockets)');
-  const sockets = await safeFetchSockets(io, "/");
-  const byId = new Map();
+// async function buildDeviceListGlobal() {
+//   dlog('[DEVICE_LIST] building (global via fetchSockets)');
+//   const sockets = await safeFetchSockets(io, "/");
+//   const byId = new Map();
 
-  for (const s of sockets) {
-    const id = s?.data?.xrId;
-    if (!id) continue;
+//   for (const s of sockets) {
+//     const id = s?.data?.xrId;
+//     if (!id) continue;
 
-    // Pull latest battery snapshot if we have one
-    const b = batteryByDevice?.get(id) || {};
-    // 🔵 NEW: network telemetry snapshot
-    const t = telemetryByDevice?.get(id) || null;
+//     // Pull latest battery snapshot if we have one
+//     const b = batteryByDevice?.get(id) || {};
+//     // 🔵 NEW: network telemetry snapshot
+//     const t = telemetryByDevice?.get(id) || null;
 
-    byId.set(id, {
+//     byId.set(id, {
+//       xrId: id,
+//       deviceName: s.data?.deviceName || 'Unknown',
+//       // Battery fields
+//       battery: (typeof b.pct === 'number') ? b.pct : null,
+//       charging: !!b.charging,
+//       batteryTs: b.ts || null,
+//       // 🔵 Telemetry fields (optional)
+//       ...(t ? { telemetry: t } : {}),
+//     });
+//   }
+
+//   const list = [...byId.values()];
+//   dlog('[DEVICE_LIST] built:', list);
+//   return list;
+// }
+
+// ✅ Build device list strictly for a given room (pair isolation)
+// ✅ FIX: supports BOTH Redis shapes:
+//    - HASH keys (preferred)
+//    - JSON string via SET (legacy)
+async function buildDeviceListForRoom(roomId) {
+  dlog('[DEVICE_LIST] building (room via redis+roomName):', roomId);
+  if (!roomId) return [];
+
+  const ids = parsePairRoom(roomId);
+  if (!ids.length) return [];
+
+  const out = [];
+
+  const numOrNull = (v) => {
+    if (v === null || v === undefined) return null;
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+    if (typeof v === 'string') {
+      const s = v.trim();
+      if (!s) return null; // IMPORTANT: don't turn '' into 0
+      const n = Number(s);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  };
+
+  for (const id of ids) {
+    let deviceName = null;
+
+    // local fallbacks (if present)
+    let b = batteryByDevice?.get(id) || null;
+    let t = telemetryByDevice?.get(id) || null;
+
+    // ✅ ONLINE CHECK (prod multi-instance): only show devices that currently own this XR ID
+    if (redisPub) {
+      try {
+        const owner = await redisPub.get(`xr:owner:${id}`);
+        if (!owner) {
+          dlog('[DEVICE_LIST] skipping offline XR (no owner lock):', id);
+          continue;
+        }
+      } catch (e) {
+        // If Redis hiccups, do NOT hide devices incorrectly
+        dwarn('[DEVICE_LIST] owner check failed; keeping id:', id, e?.message || e);
+      }
+    } else {
+      // Local-only fallback (single instance): show only if present locally
+      if (!onlineDevices?.has(id) && !clients?.has(id)) {
+        dlog('[DEVICE_LIST] skipping offline XR (no local presence):', id);
+        continue;
+      }
+    }
+
+    // ✅ Cross-instance fallback: read from Redis if local maps don't have it
+    if (redisPub) {
+      try {
+        // ---------------- meta (HASH) ----------------
+        if (!deviceName) {
+          deviceName = await redisPub.hGet(`xr:meta:${id}`, 'deviceName');
+        }
+
+        // ---------------- battery (HASH preferred, JSON fallback) ----------------
+        if (!b || b.pct == null) {
+          // Try HASH first
+          const pctH = await redisPub.hGet(`xr:battery:${id}`, 'pct');
+          const chH = await redisPub.hGet(`xr:battery:${id}`, 'charging');
+          const tsH = await redisPub.hGet(`xr:battery:${id}`, 'ts');
+
+          const pctN = numOrNull(pctH);
+          if (pctN != null) {
+            b = {
+              pct: pctN,
+              charging: (String(chH).toLowerCase() === 'true'),
+              ts: numOrNull(tsH),
+            };
+          } else {
+            // Legacy JSON string via SET
+            const raw = await redisPub.get(`xr:battery:${id}`);
+            if (raw) {
+              try {
+                const obj = JSON.parse(raw);
+                b = {
+                  pct: numOrNull(obj?.pct),
+                  charging: !!obj?.charging,
+                  ts: numOrNull(obj?.ts),
+                };
+              } catch { /* ignore */ }
+            }
+          }
+        }
+
+        // ---------------- telemetry (HASH preferred, JSON fallback) ----------------
+        if (!t) {
+          // Try HASH first
+          const tel = await redisPub.hGetAll(`xr:telemetry:${id}`);
+          if (tel && Object.keys(tel).length) {
+            t = {
+              xrId: id,
+              connType: tel.connType || 'none',
+              wifiDbm: numOrNull(tel.wifiDbm),
+              wifiMbps: numOrNull(tel.wifiMbps),
+              wifiBars: numOrNull(tel.wifiBars),
+              cellDbm: numOrNull(tel.cellDbm),
+              cellBars: numOrNull(tel.cellBars),
+              netDownMbps: numOrNull(tel.netDownMbps),
+              netUpMbps: numOrNull(tel.netUpMbps),
+              cpuPct: numOrNull(tel.cpuPct),
+              memUsedMb: numOrNull(tel.memUsedMb),
+              memTotalMb: numOrNull(tel.memTotalMb),
+              deviceTempC: numOrNull(tel.deviceTempC),
+              ts: numOrNull(tel.ts),
+            };
+          } else {
+            // Legacy JSON string via SET
+            const raw = await redisPub.get(`xr:telemetry:${id}`);
+            if (raw) {
+              try {
+                const obj = JSON.parse(raw);
+                t = {
+                  xrId: id,
+                  connType: obj?.connType || 'none',
+                  wifiDbm: numOrNull(obj?.wifiDbm),
+                  wifiMbps: numOrNull(obj?.wifiMbps),
+                  wifiBars: numOrNull(obj?.wifiBars),
+                  cellDbm: numOrNull(obj?.cellDbm),
+                  cellBars: numOrNull(obj?.cellBars),
+                  netDownMbps: numOrNull(obj?.netDownMbps),
+                  netUpMbps: numOrNull(obj?.netUpMbps),
+                  cpuPct: numOrNull(obj?.cpuPct),
+                  memUsedMb: numOrNull(obj?.memUsedMb),
+                  memTotalMb: numOrNull(obj?.memTotalMb),
+                  deviceTempC: numOrNull(obj?.deviceTempC),
+                  ts: numOrNull(obj?.ts),
+                };
+              } catch { /* ignore */ }
+            }
+          }
+        }
+      } catch (e) {
+        dwarn('[DEVICE_LIST] redis fallback read failed:', e?.message || e);
+      }
+    }
+
+    out.push({
       xrId: id,
-      deviceName: s.data?.deviceName || 'Unknown',
-      // Battery fields
-      battery: (typeof b.pct === 'number') ? b.pct : null,
-      charging: !!b.charging,
-      batteryTs: b.ts || null,
-      // 🔵 Telemetry fields (optional)
+      deviceName: deviceName || 'Unknown',
+      battery: (typeof b?.pct === 'number') ? b.pct : null,
+      charging: !!b?.charging,
+      batteryTs: b?.ts || null,
       ...(t ? { telemetry: t } : {}),
     });
   }
 
-  const list = [...byId.values()];
-  dlog('[DEVICE_LIST] built:', list);
-  return list;
-}
-
-// ✅ Build device list strictly for a given room (pair isolation)
-// ✅ FIX: do NOT use fetchSockets() (it is timing out with your adapter)
-// Instead: parse the canonical room name "pair:XR-A:XR-B" and use online maps.
-async function buildDeviceListForRoom(roomId) {
-  dlog('[DEVICE_LIST] building (room by parsing roomId):', roomId);
-  if (!roomId || !roomId.startsWith('pair:')) return [];
-
-  // roomId format: "pair:XR-8000:XR-8005"
-  const parts = String(roomId).split(':');
-  const a = normXr(parts[1] || '');
-  const b = normXr(parts[2] || '');
-
-  const ids = [a, b].filter(Boolean);
-  const list = [];
-
-  for (const id of ids) {
-    // Use your existing CI helper (preferred)
-    const s = getClientSocketByXrIdCI(id);
-
-    // If not online, skip
-    if (!s || !s.connected) continue;
-
-    const bRec = batteryByDevice?.get(id) || {};
-    const tRec = telemetryByDevice?.get(id) || null;
-
-    list.push({
-      xrId: id,
-      deviceName: s.data?.deviceName || 'Unknown',
-      battery: (typeof bRec.pct === 'number') ? bRec.pct : null,
-      charging: !!bRec.charging,
-      batteryTs: bRec.ts || null,
-      ...(tRec ? { telemetry: tRec } : {}),
-    });
-  }
-
-  // ✅ Enforce strict one-to-one pair: max 2 devices
-  if (list.length > 2) {
-    dwarn('[DEVICE_LIST] Room has >2 members (should never happen):', roomId, list.map(x => x.xrId));
-    return list.slice(0, 2);
-  }
-
-  dlog('[DEVICE_LIST] built (room):', roomId, list);
-  return list;
+  dlog('[DEVICE_LIST] built (room):', roomId, out);
+  return out.slice(0, 2);
 }
 
 
-
-// ✅ Broadcast device list: global OR room-scoped (Option B safe)
+// ✅ Broadcast device list: Option B STRICT room-only
 async function broadcastDeviceList(roomId) {
-  dlog('[DEVICE_LIST] broadcast start', roomId ? `(room: ${roomId})` : '(global)');
+  if (!roomId) {
+    // 🚫 In Option B prod, never broadcast global device lists
+    dlog('[DEVICE_LIST] skip broadcast (no roomId)');
+    return;
+  }
+
+  dlog('[DEVICE_LIST] broadcast start', `(room: ${roomId})`);
 
   try {
-    const list = roomId
-      ? await buildDeviceListForRoom(roomId)   // ✅ MUST await
-      : await buildDeviceListGlobal();
-
-    if (roomId) {
-      io.to(roomId).emit('device_list', list); // ✅ room-only
-    } else {
-      io.emit('device_list', list);            // ✅ legacy global
-    }
+    const list = await buildDeviceListForRoom(roomId); // ✅ MUST await
+    io.to(roomId).emit('device_list', list);           // ✅ room-only
 
     dlog(
       '[DEVICE_LIST] broadcast done (size:',
       Array.isArray(list) ? list.length : 'INVALID',
       ')',
-      roomId ? `(room: ${roomId})` : '(global)'
+      `(room: ${roomId})`
     );
   } catch (e) {
     dwarn('[DEVICE_LIST] Failed to build list:', e?.message || e);
   }
 }
+
+
 
 
 
@@ -3172,6 +3304,10 @@ app.post('/desktop-telemetry', (req, res) => {
   }
 });
 
+// ✅ Redis clients for cross-instance shared state (device list)
+let redisPub = null;
+let redisSub = null;
+
 
 // -------------------- Redis Adapter --------------------
 (async () => {
@@ -3180,10 +3316,11 @@ app.post('/desktop-telemetry', (req, res) => {
     if (REDIS_URL) {
       const useTls = (process.env.REDIS_TLS || 'true').toLowerCase() === 'true';
       dlog('[REDIS] connecting', { REDIS_URL: trimStr(REDIS_URL, 80), useTls });
-      const pub = createClient({ url: REDIS_URL, socket: { tls: useTls } });
-      const sub = pub.duplicate();
-      await Promise.all([pub.connect(), sub.connect()]);
-      io.adapter(createAdapter(pub, sub));
+      redisPub = createClient({ url: REDIS_URL, socket: { tls: useTls } });
+      redisSub = redisPub.duplicate();
+      await Promise.all([redisPub.connect(), redisSub.connect()]);
+      io.adapter(createAdapter(redisPub, redisSub));
+
       console.log('[SOCKET.IO] Redis adapter attached');
     } else {
       dwarn('[SOCKET.IO] No REDIS_URL set. Running without Redis adapter.');
@@ -3192,6 +3329,7 @@ app.post('/desktop-telemetry', (req, res) => {
     derr('[SOCKET.IO] Redis adapter failed; continuing in-memory:', e.message);
   }
 })();
+
 
 // ---- Medication sanitizer: keep only "pure" medication (name ± strength) ----
 function normalizeMedicationList(raw) {
@@ -3530,59 +3668,97 @@ io.on('connection', (socket) => {
 
     // ✅ normalize once (Option B)
     const XR = normXr(xrId);
-
-    // 🔒 Duplicate xrId handling (NEWEST WINS): if an old socket exists, kick it and accept this one.
+    // 🔒 Duplicate xrId handling (NEWEST WINS) — prod safe (multi-instance)
     try {
-      const all = await safeFetchSockets(io, "/");
-      const holder = all.find(s =>
-        s.id !== socket.id &&
-        typeof s.data?.xrId === 'string' &&
-        normXr(s.data.xrId) === XR
-      );
+      // Always normalize once
+      const mySid = socket.id;
 
-      if (holder) {
-        const holderInfo = {
-          xrId: XR,
-          deviceName: holder.data?.deviceName || 'Unknown',
-          since: holder.data?.connectedAt || null,
-          socketId: holder.id,
-        };
-        dlog('[IDENTIFY] Duplicate xrId detected — disconnecting old socket, keeping new:', holderInfo);
-        // ✅ Capture partner BEFORE clearing pairing so we can clear partner socket roomId too
-        const oldPartner = pairedWith.get(XR) || null;
+      if (redisPub) {
+        const key = `xr:owner:${XR}`;
 
+        // 1) Claim ownership for this XR to THIS socket.id (with TTL)
+        //    Whoever writes last wins.
+        await redisPub.set(key, mySid, { EX: 120 }); // 2 min TTL
 
-        // Clear stale pairing state for this XR (and its partner) so re-pair works cleanly
-        clearPairByXrId(XR);
-        // ✅ Also clear partner socket roomId (prevents stale "I'm still paired" state)
-        if (oldPartner) {
-          const pSock = getClientSocketByXrIdCI(oldPartner);
-          if (pSock) {
-            try { pSock.data.roomId = null; } catch { }
-          }
+        // 2) Read back immediately: if it isn't me, I lost the race → disconnect myself
+        const owner = await redisPub.get(key);
+        if (owner && owner !== mySid) {
+          dwarn('[IDENTIFY] Lost ownership race (another instance holds XR). Disconnecting self.', {
+            xrId: XR, mine: mySid, owner
+          });
+          try { socket.emit('replaced_by_new_session', { xrId: XR }); } catch { }
+          return socket.disconnect(true);
         }
 
+        // 3) I am the owner now. If this instance also has an old local holder socket, kick it.
+        const local = Array.from(io.of("/").sockets.values());
+        const holder = local.find(s =>
+          s.id !== socket.id &&
+          typeof s.data?.xrId === "string" &&
+          normXr(s.data.xrId) === XR
+        );
 
-        // Best-effort: disconnect the old socket
-        try {
-          try { holder.data.roomId = null; } catch { }
-          holder.emit('replaced_by_new_session', { xrId: XR });
-        } catch { }
-        try {
-          holder.disconnect(true);
-        } catch (e) {
-          dwarn('[IDENTIFY] failed to disconnect old holder:', e?.message || e);
+        if (holder) {
+          dlog('[IDENTIFY] Duplicate xrId (local) — disconnecting old socket, keeping new:', {
+            xrId: XR,
+            deviceName: holder.data?.deviceName || 'Unknown',
+            since: holder.data?.connectedAt || null,
+            socketId: holder.id,
+          });
+
+          // ✅ Capture partner BEFORE clearing pairing
+          const oldPartner = pairedWith.get(XR) || null;
+
+          // Clear stale pairing state for this XR (and its partner)
+          clearPairByXrId(XR);
+
+          // ✅ Also clear partner socket roomId (if partner is on this instance)
+          if (oldPartner) {
+            const pSock = getClientSocketByXrIdCI(oldPartner);
+            if (pSock) {
+              try { pSock.data.roomId = null; } catch { }
+            }
+          }
+
+          // Best-effort: disconnect old local socket
+          try { try { holder.data.roomId = null; } catch { } holder.emit('replaced_by_new_session', { xrId: XR }); } catch { }
+          try { holder.disconnect(true); } catch (e) { dwarn('[IDENTIFY] failed to disconnect old holder:', e?.message || e); }
+        }
+      } else {
+        // Fallback (local only) — works in single instance
+        const local = Array.from(io.of("/").sockets.values());
+        const holder = local.find(s =>
+          s.id !== socket.id &&
+          typeof s.data?.xrId === "string" &&
+          normXr(s.data.xrId) === XR
+        );
+
+        if (holder) {
+          dlog('[IDENTIFY] Duplicate xrId (local, no redis) — disconnecting old socket:', holder.id);
+          try { holder.disconnect(true); } catch { }
         }
       }
     } catch (e) {
-      dwarn('[IDENTIFY] fetchSockets failed; continuing cautiously:', e?.message || e);
+      dwarn('[IDENTIFY] owner check failed; continuing cautiously:', e?.message || e);
     }
+
 
 
     // ✅ Accept this socket
     socket.data.deviceName = deviceName || 'Unknown';
     socket.data.xrId = XR;
     socket.data.connectedAt = Date.now();
+
+    if (redisPub) {
+      const key = `xr:meta:${XR}`;
+      redisPub.hSet(key, {
+        deviceName: socket.data.deviceName,
+        ts: String(Date.now()),
+      }).catch(e => dwarn('[IDENTIFY] redis meta write failed:', e?.message || e));
+
+      redisPub.expire(key, 300).catch(() => { }); // use 300 like others
+    }
+
 
     // try { await socket.join(roomOf(XR)); }
     // catch (e) { dwarn('[IDENTIFY] join room failed:', e?.message || e); }
@@ -4032,34 +4208,56 @@ io.on('connection', (socket) => {
   });
 
   // -------- battery (NEW) --------
-  socket.on('battery', ({ xrId, batteryPct, charging }) => {
+  socket.on('battery', async ({ xrId, batteryPct, charging }) => {
     try {
       const id = xrId || socket.data?.xrId;
       if (!id) return;
+
       const pct = Math.max(0, Math.min(100, Number(batteryPct)));
       const rec = { pct, charging: !!charging, ts: Date.now() };
 
+      // local cache
       batteryByDevice.set(id, rec);
-      io.emit('battery_update', { xrId: id, pct: rec.pct, charging: rec.charging, ts: rec.ts });
+
+      // ✅ Redis (multi-instance safe)
+      if (redisPub) {
+        try {
+          const key = `xr:battery:${id}`;
+          await redisPub.hSet(key, {
+            pct: String(rec.pct),
+            charging: String(rec.charging),
+            ts: String(rec.ts),
+          });
+          await redisPub.expire(key, 300);
+        } catch (e) {
+          dwarn('[battery] redis write failed:', e?.message || e);
+        }
+      }
+
+      io.emit('battery_update', {
+        xrId: id,
+        pct: rec.pct,
+        charging: rec.charging,
+        ts: rec.ts
+      });
+
       dlog('[battery] update', { id, pct: rec.pct, charging: rec.charging });
     } catch (e) {
       dwarn('[battery] bad payload:', e?.message || e);
     }
   });
 
+
   // -------- telemetry (NEW) --------
-  socket.on('telemetry', (payload) => {
+  socket.on('telemetry', async (payload) => {
     try {
       const d = typeof payload === 'string' ? JSON.parse(payload) : (payload || {});
       const xrId = d.xrId || socket.data?.xrId;
       if (!xrId) return;
 
-      // keep ALL fields (network + system)
       const rec = {
         xrId,
         connType: d.connType || 'none',
-
-        // network (existing)
         wifiDbm: numOrNull(d.wifiDbm),
         wifiMbps: numOrNull(d.wifiMbps),
         wifiBars: numOrNull(d.wifiBars),
@@ -4067,20 +4265,30 @@ io.on('connection', (socket) => {
         cellBars: numOrNull(d.cellBars),
         netDownMbps: numOrNull(d.netDownMbps),
         netUpMbps: numOrNull(d.netUpMbps),
-
-        // 🔵 system (NEW)
         cpuPct: numOrNull(d.cpuPct),
         memUsedMb: numOrNull(d.memUsedMb),
         memTotalMb: numOrNull(d.memTotalMb),
         deviceTempC: numOrNull(d.deviceTempC),
-
         ts: Date.now(),
       };
 
-      // keep latest snapshot for device rows
+      // local cache
       telemetryByDevice.set(xrId, rec);
 
-      // time-series history (for modal charts)
+      // ✅ Redis (multi-instance safe)
+      if (redisPub) {
+        try {
+          const key = `xr:telemetry:${xrId}`;
+          await redisPub.hSet(key, Object.fromEntries(
+            Object.entries(rec).map(([k, v]) => [k, v == null ? '' : String(v)])
+          ));
+          await redisPub.expire(key, 300);
+        } catch (e) {
+          dwarn('[telemetry] redis write failed:', e?.message || e);
+        }
+      }
+
+      // history (unchanged)
       pushHist(telemetryHist, xrId, {
         ts: rec.ts,
         connType: rec.connType,
@@ -4088,23 +4296,18 @@ io.on('connection', (socket) => {
         netDownMbps: rec.netDownMbps,
         netUpMbps: rec.netUpMbps,
         batteryPct: batteryByDevice.get(xrId)?.pct ?? null,
-
-        // include system series
         cpuPct: rec.cpuPct,
         memUsedMb: rec.memUsedMb,
         memTotalMb: rec.memTotalMb,
         deviceTempC: rec.deviceTempC,
       });
 
-      // live delta for open detail modal subscribers
       io.to(`metrics:${xrId}`).emit('metrics_update', {
         xrId,
         telemetry: [telemetryHist.get(xrId).at(-1)]
       });
 
-      // broadcast the latest snapshot to dashboards
       io.emit('telemetry_update', rec);
-
       dlog('[telemetry] update', rec);
     } catch (e) {
       dwarn('[telemetry] bad payload:', e?.message || e);
@@ -4169,25 +4372,38 @@ io.on('connection', (socket) => {
   });
 
 
-
   // Notify peers *before* Socket.IO removes the socket from rooms
   // Notify peers *before* Socket.IO removes the socket from rooms
-  socket.on('disconnecting', () => {
+  socket.on('disconnecting', async () => {
     const xrId = normXr(socket.data?.xrId);
     if (!xrId) return;
 
+    // ✅ EARLY OWNER RELEASE (prevents stale device_list when peer immediately requests)
+    if (redisPub) {
+      try {
+        const ownerKey = `xr:owner:${xrId}`;
+        const owner = await redisPub.get(ownerKey);
+
+        // Only release if THIS socket owns it
+        if (owner === socket.id) {
+          await redisPub.del(ownerKey);
+          dlog('[REDIS] released xr owner lock (early)', xrId);
+        }
+      } catch (e) {
+        dwarn('[disconnecting] redis owner cleanup failed:', e?.message || e);
+      }
+    }
+
     for (const roomId of socket.rooms) {
-      if (roomId.startsWith('pair:')) {
+      if (typeof roomId === 'string' && roomId.startsWith('pair:')) {
         socket.to(roomId).emit('peer_left', { xrId, roomId });
-        // optional compatibility ping
         socket.to(roomId).emit('desktop_disconnected', { xrId, roomId });
-
         dlog('[disconnecting] notified peer_left', { xrId, roomId });
-        // ✅ NEW: update ONLY this room's device list (prevents global leak)
-
       }
     }
   });
+
+
 
 
 
@@ -4202,41 +4418,56 @@ io.on('connection', (socket) => {
 
     try {
       const xrId = normXr(socket.data?.xrId);
-      if (xrId) {
-        // Remove from your in-memory maps
-        clients.delete(xrId);
-        onlineDevices.delete(xrId);
+      if (!xrId) return;
 
-        // ✅ Capture room before clearing it
-        const roomIdAtDisconnect = socket.data?.roomId;
+      // --------------------
+      // Local in-memory cleanup
+      // --------------------
+      clients.delete(xrId);
+      onlineDevices.delete(xrId);
 
-        // ✅ Clear authoritative room routing for this socket
-        socket.data.roomId = null;
+      const roomIdAtDisconnect = socket.data?.roomId;
+      socket.data.roomId = null;
 
-        // ✅ Option B: release one-to-one lock (do this ONCE)
-        const partner = clearPairByXrId(xrId);
-        if (partner) {
-          dlog('[PAIR] cleared pairing', { xrId, partner });
-        }
+      // Release one-to-one pairing
+      const partner = clearPairByXrId(xrId);
+      if (partner) dlog('[PAIR] cleared pairing', { xrId, partner });
 
-        if (desktopClients.get(xrId) === socket) {
-          desktopClients.delete(xrId);
-          dlog('[disconnect] removed desktop client:', xrId);
-        }
-
-        // ✅ Broadcast device list ONLY to the pair room
-        await broadcastDeviceList(roomIdAtDisconnect);
-
-        // ✅ After Socket.IO prunes rooms, reflect pair changes
-        setTimeout(() => {
-          broadcastPairs();
-        }, 0);
+      if (desktopClients.get(xrId) === socket) {
+        desktopClients.delete(xrId);
+        dlog('[disconnect] removed desktop client:', xrId);
       }
+
+      // --------------------
+      // ✅ Redis: backup owner release (usually already deleted in disconnecting)
+      // --------------------
+      if (redisPub) {
+        try {
+          const ownerKey = `xr:owner:${xrId}`;
+          const owner = await redisPub.get(ownerKey);
+          if (owner === socket.id) {
+            await redisPub.del(ownerKey);
+            dlog('[REDIS] released xr owner lock (backup)', xrId);
+          }
+        } catch (e) {
+          dwarn('[disconnect] redis owner cleanup failed:', e?.message || e);
+        }
+      }
+
+      // --------------------
+      // Room-scoped UI update
+      // --------------------
+      await broadcastDeviceList(roomIdAtDisconnect);
+
+      setTimeout(() => broadcastPairs(), 0);
 
     } catch (err) {
       derr('[disconnect] cleanup error:', err.message);
     }
   });
+
+
+
 
 
 
