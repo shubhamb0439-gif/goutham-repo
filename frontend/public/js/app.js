@@ -630,19 +630,27 @@ function initSocket() {
 
     socket.io.on('reconnect', (attempt) => {
         console.log('[SOCKET] 🔄 Reconnected. attempt=', attempt);
+
+        // ✅ reset stale pairing + stale device list FIRST (prevents wrong filtering)
+        currentRoom = null;
+        pairedPeerId = null;
+        lastDeviceList = [];
+        updateDeviceList([]);   // clear UI immediately
+
         const payload = { deviceName: DEVICE_NAME, xrId: XR_ID };
+
+        // ✅ identify first so server sets socket.data.xrId
         socket.emit('identify', payload);
+
+        // ✅ then ask for list (server will return self-only until room_joined, then room list)
         socket.emit('request_device_list');
 
-        // On reconnect, try to re-pair if room was lost
-        if (!currentRoom) {
-            console.log('[PAIR] Option B: waiting for server auto-pair (room_joined)');
-
-        }
+        console.log('[PAIR] Option B: waiting for server auto-pair (room_joined)');
 
         startHeartbeat();
         announcePresence('connected');
     });
+
 
     socket.on('connect_error', (err) => {
         console.warn('[SOCKET] connect_error:', err?.message || err);
@@ -657,23 +665,26 @@ function initSocket() {
         stopHeartbeat();
 
         if (manualDisconnect) {
-            // Already wiped in toggleConnection(); nothing extra here
             console.log('[SOCKET] Manual disconnect completed');
         } else {
             console.log('[SOCKET] Non-manual disconnect (e.g., refresh or network) — preserving messages');
         }
 
-        currentRoom = null; // we’ll re-pair on next connect if needed
-        manualDisconnect = false; // reset the latch
+        // ✅ clear pairing + routing
+        currentRoom = null;
+        pairedPeerId = null;
+        manualDisconnect = false;
 
-        // do not clear AUTO_KEY; preserves refresh auto-connect if enabled
-        updateDeviceList(lastDeviceList);
+        // ✅ clear stale device list (don’t re-render old list)
+        lastDeviceList = [];
+        updateDeviceList([]);
+
         announcePresence('idle');
-
 
         // 🔴 stop desktop telemetry loop
         if (dockTelTimer) { clearInterval(dockTelTimer); dockTelTimer = null; }
     });
+
 
     socket.on('error', (data) => {
         // If the server warns about duplicate desktops, surface that to the UI
@@ -702,7 +713,10 @@ function initSocket() {
     // --- your existing handlers ---
     socket.on('signal', handleSignalMessage);
     socket.on('message', handleChatMessage);
-    socket.on('device_list', updateDeviceList);
+    socket.on('device_list', (list) => {
+        console.log('[DEVICES] device_list received:', list);
+        updateDeviceList(list);
+    });
     socket.on('control', handleControlCommand);
     socket.on('message-cleared', handleMessagesCleared);
     socket.on('message_history', handleMessageHistory);
@@ -744,7 +758,7 @@ function initSocket() {
         addSystemMessage(`🎯 VR Room created: ${roomId}.${memList ? ` Members: ${memList}` : ''}`);
 
         // 4) Re-render device list (unchanged)
-        updateDeviceList(lastDeviceList || []);
+        // updateDeviceList(lastDeviceList || []);
 
         // ✅ Flush any WebRTC payloads that were created before room_joined existed
         if (pendingLocalAnswer && socket?.connected) {
@@ -806,14 +820,31 @@ function initSocket() {
 
     socket.on('peer_left', ({ xrId, roomId }) => {
         console.log('[PAIR] peer_left', xrId, roomId);
+
         if (currentRoom === roomId) {
             addSystemMessage(`${xrId} left the room.`);
-            currentRoom = null; // ensure we don’t keep signaling into an empty room
+
+            // ✅ clear pairing/routing
+            currentRoom = null;
+            pairedPeerId = null;
+
+            // ✅ stop WebRTC
             stopStream();
-            // ✅ refresh list so it stops filtering to a stale pair
-            if (lastDeviceList) updateDeviceList(lastDeviceList);
+
+            // ✅ clear local stale cache
+            lastDeviceList = [];
+            updateDeviceList([]);
+
+            // ✅ CRITICAL: ask server for fresh authoritative list (self only)
+            try {
+                socket.emit('request_device_list');
+            } catch (e) {
+                console.warn('[DEVICES] request_device_list after peer_left failed:', e);
+            }
         }
     });
+
+
 }
 
 // ---------------- Clickable status pill: Connect/Disconnect ----------------
@@ -1472,62 +1503,61 @@ function updateDeviceList(devices) {
         return;
     }
 
+    // store latest raw list
     lastDeviceList = devices;
 
     console.log('[DEVICES] Updating device list with', devices.length, 'devices');
     deviceListElement.innerHTML = '';
 
-    const myId = XR_ID;
-    const peerId = pairedPeerId;
+    const myId = normalizeId(XR_ID);
+    const peerId = normalizeId(pairedPeerId);
 
-    // ✅ Always restrict visibility:
-    // - before pairing: show only self
-    // - after pairing: show only self + paired peer
-    const wantOnlyPair = true;
+    // ✅ Only restrict to pair IF we are actually paired (room exists)
+    const wantOnlyPair = !!currentRoom;
 
-
-    const allowed = new Set([normalizeId(myId), normalizeId(peerId)].filter(Boolean));
+    // allowed set only matters when paired
+    const allowed = new Set([myId, peerId].filter(Boolean));
 
     let peerOnline = false;
     let sameIdCount = 0;
 
     devices.forEach((device) => {
         const devIdNorm = normalizeId(device?.xrId);
+        if (!devIdNorm) return;
 
-        // ✅ Filter: if paired (room exists), ignore any device not in the pair
+        // ✅ If paired, ignore any device not in the pair
         if (wantOnlyPair && !allowed.has(devIdNorm)) return;
 
-        const isSelfId = devIdNorm === normalizeId(myId);
+        const isSelfId = devIdNorm === myId;
         if (isSelfId) sameIdCount += 1;
 
-        // If we're disconnected, hide our own Desktop entry
-        if (isSelfId && !(socket && socket.connected)) return;
+        // ✅ When NOT paired, show only self (prevents “random other devices”)
+        if (!wantOnlyPair && !isSelfId) return;
 
+        // If we're disconnected, you can choose to show self or not.
+        // I recommend showing self with a "(disconnected)" label instead of hiding.
         const name = isSelfId
             ? (DEVICE_NAME || 'This device')
             : (device.deviceName || device.name || 'Unknown');
 
-        console.log(`[DEVICE] Adding device: ${name} (${device.xrId})`);
         const li = document.createElement('li');
-        li.textContent = `${name} (${device.xrId})`;
+        const suffix = (isSelfId && !(socket && socket.connected)) ? ' (disconnected)' : '';
+        li.textContent = `${name}${suffix} (${device.xrId})`;
         deviceListElement.appendChild(li);
 
-        if (peerId && devIdNorm === normalizeId(peerId)) {
-            peerOnline = true;
-        }
+        if (peerId && devIdNorm === peerId) peerOnline = true;
     });
 
-    // Duplicate-tab notice if same XR ID is observed more than once
     if (sameIdCount > 1 && !duplicateNotified) {
         addSystemMessage('⚠️ This XR ID is active in another tab/window. Only one desktop should use the same XR ID.');
         duplicateNotified = true;
     }
 
-    // Keep your existing log
-    if (peerId && !peerOnline) {
-        console.log(`[PAIR] Peer (${peerId}) is not online yet — waiting`);
+    if (peerId && wantOnlyPair && !peerOnline) {
+        console.log(`[PAIR] Peer (${pairedPeerId}) is not online yet — waiting`);
     }
 }
+
 
 
 function sendMessage() {
