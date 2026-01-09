@@ -664,6 +664,8 @@ function initSocket() {
         }
 
         currentRoom = null; // we’ll re-pair on next connect if needed
+        pairedPeerId = null; // ✅ prevent stale peer filtering after disconnect
+
         manualDisconnect = false; // reset the latch
 
         // do not clear AUTO_KEY; preserves refresh auto-connect if enabled
@@ -809,6 +811,8 @@ function initSocket() {
         if (currentRoom === roomId) {
             addSystemMessage(`${xrId} left the room.`);
             currentRoom = null; // ensure we don’t keep signaling into an empty room
+            pairedPeerId = null; // ✅ prevent stale peer filtering after peer_left
+
             stopStream();
             // ✅ refresh list so it stops filtering to a stale pair
             if (lastDeviceList) updateDeviceList(lastDeviceList);
@@ -1483,7 +1487,8 @@ function updateDeviceList(devices) {
     // ✅ Always restrict visibility:
     // - before pairing: show only self
     // - after pairing: show only self + paired peer
-    const wantOnlyPair = true;
+    const wantOnlyPair = !!(currentRoom && peerId); // ✅ only restrict after room_joined
+
 
 
     const allowed = new Set([normalizeId(myId), normalizeId(peerId)].filter(Boolean));
