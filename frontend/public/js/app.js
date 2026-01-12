@@ -700,6 +700,12 @@ function initSocket() {
         announcePresence('idle');
     });
 
+    // --- 🔎 server -> browser debug channel (temporary) ---
+    socket.on("debug_log", (d) => {
+        console.log("SERVER DEBUG:", d?.msg, d);
+    });
+
+
 
     // --- your existing handlers ---
     socket.on('signal', handleSignalMessage);
