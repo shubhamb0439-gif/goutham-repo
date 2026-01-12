@@ -124,6 +124,20 @@ const io = new Server(server, {
 
 console.log('[SOCKET.IO] Socket.IO server initialized');
 
+/* =========================================================
+   DEBUG HELPER (TEMP – SAFE)
+   ========================================================= */
+function dbgToSocket(socket, msg, extra = {}) {
+  try {
+    socket.emit("debug_log", {
+      msg,
+      ...extra,
+      t: new Date().toISOString()
+    });
+  } catch { }
+}
+
+
 // -------------------- Socket.IO Redis Adapter (MANDATORY for multi-instance) --------------------
 let ioRedisReady = false;
 
@@ -575,91 +589,115 @@ async function resolveXrIdByUserId(userId) {
   const xr = rows?.[0]?.xr_id;
   return xr ? String(xr).trim() : null;
 }
-
-async function findSocketByXrIdCI_Cluster(xrId) {
+async function findSocketByXrIdCI_Cluster(xrId, debugSocket = null) {
   const XR = normXr(xrId);
-  if (!XR) return null;
+  if (!XR) {
+    if (debugSocket) dbgToSocket(debugSocket, "[PAIR][FIND] invalid xrId", { xrId });
+    return null;
+  }
 
   const sockets = await safeFetchSockets(io, "/");
-  return sockets.find(s =>
-    s?.connected &&
-    typeof s.data?.xrId === "string" &&
-    normXr(s.data.xrId) === XR
-  ) || null;
+
+  // Send a small summary to browser for debugging (limit to 10 entries)
+  if (debugSocket) {
+    dbgToSocket(debugSocket, "[PAIR][FIND] scanned sockets", {
+      targetXR: XR,
+      totalSockets: sockets.length,
+      sample: sockets.slice(0, 10).map(s => ({
+        id: s.id,
+        connected: s.connected,        // often undefined for RemoteSocket (this is the bug)
+        dataXrId: s.data?.xrId
+      })),
+    });
+  }
+
+  // ✅ CRITICAL FIX: do NOT filter by s.connected in cluster mode
+  const found =
+    sockets.find(s =>
+      typeof s.data?.xrId === "string" &&
+      normXr(s.data.xrId) === XR
+    ) || null;
+
+  if (debugSocket) {
+    dbgToSocket(debugSocket, found ? "[PAIR][FIND] FOUND" : "[PAIR][FIND] NOT FOUND", {
+      xrId: XR,
+      socketId: found?.id || null,
+      connected: found?.connected,
+      dataXrId: found?.data?.xrId
+    });
+  }
+
+  return found;
 }
 
 
-async function tryDbAutoPair(deviceId) {
-  dlog('[DB_AUTO_PAIR] attempt for', deviceId);
 
-  if (isAlreadyPaired(deviceId)) {
-    const stalePartner = clearPairByXrId(deviceId);
-    dlog('[DB_AUTO_PAIR] cleared stale pairing for', deviceId, 'oldPartner=', stalePartner);
-
-    // Also clear stale socket roomId state (safe even if already null) — CLUSTER-AWARE
-    const meSock = await findSocketByXrIdCI_Cluster(deviceId);
-    if (meSock) meSock.data.roomId = null;
-
-    if (stalePartner) {
-      const pSock = await findSocketByXrIdCI_Cluster(stalePartner);
-      if (pSock) pSock.data.roomId = null;
-    }
-
-    // Do NOT return; continue attempting fresh DB pairing
-  }
+async function tryDbAutoPair(deviceId, debugSocket = null) {
+  const meXr = normXr(deviceId);
+  if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] start", { deviceId: meXr });
 
   const myUserId = await resolveUserIdByXrId(deviceId);
-  dlog('[DB_AUTO_PAIR] myUserId:', myUserId);
+  if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] myUserId", { myUserId });
   if (!myUserId) return false;
 
   const partnerUserId = await resolvePartnerUserId(myUserId);
-  dlog('[DB_AUTO_PAIR] partnerUserId:', partnerUserId);
+  if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] partnerUserId", { partnerUserId });
   if (!partnerUserId) return false;
 
   const partnerId = await resolveXrIdByUserId(partnerUserId);
-  dlog('[DB_AUTO_PAIR] partnerId:', partnerId);
   const partnerXr = normXr(partnerId);
+  if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] partner xrId", { partnerId, partnerXr });
   if (!partnerXr) return false;
 
-  const meXr = normXr(deviceId);
   if (meXr === partnerXr) {
-    dlog('[DB_AUTO_PAIR] mapping points to self; refusing', { deviceId, partnerXr });
+    if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] bail: mapping points to self", { meXr, partnerXr });
     return false;
   }
 
-  const meSocket = await findSocketByXrIdCI_Cluster(deviceId);
-  const partnerSocket = await findSocketByXrIdCI_Cluster(partnerXr);
-  if (!meSocket || !partnerSocket) return false;
+  const meSocket = await findSocketByXrIdCI_Cluster(deviceId, debugSocket);
+  const partnerSocket = await findSocketByXrIdCI_Cluster(partnerXr, debugSocket);
+
+  if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] socket presence", {
+    meSocket: !!meSocket,
+    partnerSocket: !!partnerSocket,
+    partnerXr
+  });
+
+  if (!meSocket || !partnerSocket) {
+    if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] bail: missing socket(s)", {
+      note: "If partnerSocket=false, look at [PAIR][FIND] scanned sockets sample for dataXrId / namespace mismatch."
+    });
+    return false;
+  }
 
   if (isAlreadyPaired(deviceId) || isAlreadyPaired(partnerXr)) {
-    dlog('[DB_AUTO_PAIR] one side already paired, skipping');
+    if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] bail: one side already paired", { meXr, partnerXr });
     return false;
   }
 
   const roomId = getRoomIdForPair(deviceId, partnerXr);
-  const room = io.sockets.adapter.rooms.get(roomId);
-  const memberCount = room ? room.size : 0;
-  dlog('[DB_AUTO_PAIR] roomId:', roomId, 'current members:', memberCount, '(not used to block pairing)');
+  if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] joining room", { roomId });
 
   await meSocket.join(roomId);
   await partnerSocket.join(roomId);
 
-  meSocket.data.roomId = roomId;
-  partnerSocket.data.roomId = roomId;
+  try { meSocket.data.roomId = roomId; } catch { }
+  try { partnerSocket.data.roomId = roomId; } catch { }
 
   pairedWith.set(meXr, partnerXr);
   pairedWith.set(partnerXr, meXr);
 
-  dlog('[DB_AUTO_PAIR] joined both to', roomId);
+  if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] joined both", { roomId, meXr, partnerXr });
 
   const members = listRoomMembers(roomId);
-  io.to(roomId).emit('room_joined', { roomId, members });
+  io.to(roomId).emit("room_joined", { roomId, members });
 
   await broadcastDeviceList(roomId);
-
   broadcastPairs();
+
   return true;
 }
+
 
 
 
@@ -3859,10 +3897,13 @@ io.on('connection', (socket) => {
 
     try {
       if (!socket.data?.roomId) {
-        await tryDbAutoPair(XR);
+        dbgToSocket(socket, "[IDENTIFY] calling tryDbAutoPair", { XR, socketId: socket.id });
+        await tryDbAutoPair(XR, socket); // ✅ pass socket so debug goes to browser
       } else {
+        dbgToSocket(socket, "[IDENTIFY] skipping tryDbAutoPair; already in room", { roomId: socket.data.roomId });
         dlog('[IDENTIFY] Skipping tryDbAutoPair; already in room', socket.data.roomId);
       }
+
     } catch (e) {
       derr('[identify] tryDbAutoPair error:', e.message);
     }
