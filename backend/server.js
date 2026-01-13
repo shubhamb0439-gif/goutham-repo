@@ -1,4 +1,4 @@
-// --------------------------------------------Server.js ----12-01-2026------------------------------------------------
+// ---------------------------------------------Server.js ----12-01-2026------------------------------------------------
 
 // ========================================
 // CRITICAL: Load environment variables FIRST
@@ -651,6 +651,60 @@ async function findSocketByXrIdCI_Cluster(xrId, debugSocket = null) {
   return found;
 }
 
+// =========================================================
+// Pair retry scheduler (MANDATORY for Option B reliability)
+// =========================================================
+const pairRetryTimers = new Map();   // xrId -> timeoutId
+const pairRetryCounts = new Map();   // xrId -> count (for backoff)
+
+function schedulePairRetry(xrId, debugSocket = null) {
+  const XR = normXr(xrId);
+  if (!XR) return;
+
+  // If already paired, no retry needed
+  if (isAlreadyPaired(XR)) return;
+
+  // Avoid stacking multiple timers for same XR
+  if (pairRetryTimers.has(XR)) return;
+
+  const attempt = (pairRetryCounts.get(XR) || 0) + 1;
+  pairRetryCounts.set(XR, attempt);
+
+  // Backoff: 500ms, 1s, 2s, 3s, 5s (cap)
+  const delay = Math.min(500 * Math.pow(2, Math.min(attempt - 1, 3)), 5000);
+
+  dlog("[DB_AUTO_PAIR] retry scheduled", { xrId: XR, attempt, delay });
+  if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] retry scheduled", { xrId: XR, attempt, delay });
+
+  const t = setTimeout(async () => {
+    pairRetryTimers.delete(XR);
+
+    // If got paired while waiting, stop
+    if (isAlreadyPaired(XR)) return;
+
+    try {
+      // Try again. This will either pair or schedule again if still missing.
+      await tryDbAutoPair(XR, debugSocket);
+    } catch (e) {
+      dwarn("[DB_AUTO_PAIR] retry attempt failed", { xrId: XR, err: e?.message || e });
+      if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] retry attempt failed", { xrId: XR, err: e?.message || String(e) });
+      // If it fails, allow another retry later
+      pairRetryTimers.delete(XR);
+    }
+  }, delay);
+
+  pairRetryTimers.set(XR, t);
+}
+
+// Optional cleanup helper (safe to call on disconnect)
+function clearPairRetry(xrId) {
+  const XR = normXr(xrId);
+  const t = pairRetryTimers.get(XR);
+  if (t) clearTimeout(t);
+  pairRetryTimers.delete(XR);
+  pairRetryCounts.delete(XR);
+}
+
 
 
 async function tryDbAutoPair(deviceId, debugSocket = null) {
@@ -691,10 +745,10 @@ async function tryDbAutoPair(deviceId, debugSocket = null) {
       partnerXr
     });
 
-    schedulePairRetry(meXr);   // 🔑 THIS IS THE FIX
+    // ✅ MANDATORY: pass debugSocket so retry logs show in browser console
+    schedulePairRetry(meXr, debugSocket);
     return false;
   }
-
 
   if (isAlreadyPaired(deviceId) || isAlreadyPaired(partnerXr)) {
     if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] bail: one side already paired", { meXr, partnerXr });
@@ -712,6 +766,10 @@ async function tryDbAutoPair(deviceId, debugSocket = null) {
 
   pairedWith.set(meXr, partnerXr);
   pairedWith.set(partnerXr, meXr);
+
+  // ✅ MANDATORY: prevent delayed retry firing after successful pair
+  clearPairRetry(meXr);
+  clearPairRetry(partnerXr);
 
   if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] joined both", { roomId, meXr, partnerXr });
 
@@ -4669,6 +4727,7 @@ io.on('connection', (socket) => {
 
     try {
       const xrId = normXr(socket.data?.xrId);
+      clearPairRetry(xrId);
       if (xrId) {
         // ✅ PROD: release Redis online owner lock so device_list can't go stale
         await releaseOwnerLockIfOwned(xrId, socket.id);
