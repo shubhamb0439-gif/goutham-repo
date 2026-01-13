@@ -1007,7 +1007,7 @@ async function buildDeviceListForRoom(roomId) {
   return finalList;
 }
 
-
+const deviceListInFlight = new Map(); // roomId -> Promise
 
 // ✅ Broadcast device list: global OR room-scoped (Option B safe)
 async function broadcastDeviceList(roomId) {
@@ -1015,30 +1015,53 @@ async function broadcastDeviceList(roomId) {
   if (roomId) dbgToRoom(roomId, "[DEVICE_LIST] broadcast start", { roomId });
 
   try {
-    const list = roomId
-      ? await buildDeviceListForRoom(roomId)
-      : await buildDeviceListGlobal();
-
+    // ✅ ROOM PATH (Option B)
     if (roomId) {
-      io.to(roomId).emit('device_list', list);
-      dbgToRoom(roomId, "[DEVICE_LIST] broadcast done", {
-        roomId,
-        size: Array.isArray(list) ? list.length : "INVALID",
-        xrIds: Array.isArray(list) ? list.map(x => x.xrId) : null
-      });
-    } else {
-      if (IS_PROD) {
-        dwarn('[DEVICE_LIST] Refusing global broadcast in prod (Option B).');
+      // ✅ Single-flight MUST be checked before expensive buildDeviceListForRoom()
+      if (deviceListInFlight.has(roomId)) {
+        dlog('[DEVICE_LIST] skip duplicate broadcast (in-flight)', { roomId });
+        dbgToRoom(roomId, "[DEVICE_LIST] skip duplicate broadcast (in-flight)", { roomId });
         return;
       }
-      io.emit('device_list', list);
+
+      const p = (async () => {
+        const list = await buildDeviceListForRoom(roomId);
+
+        io.to(roomId).emit('device_list', list);
+        dbgToRoom(roomId, "[DEVICE_LIST] broadcast done", {
+          roomId,
+          size: Array.isArray(list) ? list.length : "INVALID",
+          xrIds: Array.isArray(list) ? list.map(x => x.xrId) : null
+        });
+
+        dlog(
+          '[DEVICE_LIST] broadcast done (size:',
+          Array.isArray(list) ? list.length : 'INVALID',
+          ')',
+          `(room: ${roomId})`
+        );
+      })().finally(() => {
+        deviceListInFlight.delete(roomId);
+      });
+
+      deviceListInFlight.set(roomId, p);
+      return; // ✅ important: don't fall through to global
     }
+
+    // ✅ GLOBAL PATH (dev only)
+    const list = await buildDeviceListGlobal();
+
+    if (IS_PROD) {
+      dwarn('[DEVICE_LIST] Refusing global broadcast in prod (Option B).');
+      return;
+    }
+    io.emit('device_list', list);
 
     dlog(
       '[DEVICE_LIST] broadcast done (size:',
       Array.isArray(list) ? list.length : 'INVALID',
       ')',
-      roomId ? `(room: ${roomId})` : '(global)'
+      '(global)'
     );
   } catch (e) {
     dwarn('[DEVICE_LIST] Failed to build list:', e?.message || e);
@@ -1046,8 +1069,12 @@ async function broadcastDeviceList(roomId) {
       roomId,
       err: e?.message || String(e)
     });
+
+    // ✅ safety: clear in-flight if error happened before finally ran
+    if (roomId) deviceListInFlight.delete(roomId);
   }
 }
+
 
 
 
