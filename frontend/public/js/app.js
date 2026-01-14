@@ -243,6 +243,7 @@ function mergeIncremental(prev, next) {
 // 🔷 ROOM: track the private room we're paired into (if any)
 let currentRoom = null;
 let pairedPeerId = null; // set when server emits room_joined
+let roomJoinedTime = 0; // timestamp for grace window after room_joined
 
 
 // 🔒 Sticky autoconnect flag (persist across refresh)
@@ -459,8 +460,6 @@ xrIdInput.addEventListener('change', () => {
     announcePresence('idle');
 });
 
-// Track when we last joined a room so we can ignore transient single-device snapshots
-let lastRoomJoinedAt = 0;
 
 // ---------------- Status pill ----------------
 function setStatus(status) {
@@ -722,19 +721,18 @@ function initSocket() {
         addSystemMessage(`Pair error: ${message}`);
     });
 
-    socket.on('room_joined', (room) => {
-        console.log('[PAIR] room_joined:', room);
+    socket.on('room_joined', ({ roomId, members }) => {
+        console.log('[PAIR] room_joined:', roomId, members);
 
         // 1) Authoritative room routing
-        currentRoom = room;
-        lastRoomJoinedAt = Date.now();
-        console.log('[PAIR] lastRoomJoinedAt:', lastRoomJoinedAt);
+        currentRoom = roomId;
+        roomJoinedTime = Date.now();
 
         // 2) Determine peer safely
         try {
             const me = normalizeId(XR_ID);
-            const other = Array.isArray(room.members)
-                ? room.members.map(normalizeId).find(m => m && m !== me)
+            const other = Array.isArray(members)
+                ? members.map(normalizeId).find(m => m && m !== me)
                 : null;
 
             pairedPeerId = other || pairedPeerId || null;
@@ -751,7 +749,7 @@ function initSocket() {
         }
 
         // 3) Safe message
-        const memList = Array.isArray(room.members) ? room.members.join(', ') : '';
+        const memList = Array.isArray(members) ? members.join(', ') : '';
         addSystemMessage(`🎯 VR Room created: ${roomId}.${memList ? ` Members: ${memList}` : ''}`);
 
         // 4) Clear UI immediately; device_list will repaint shortly
@@ -905,6 +903,7 @@ window.addEventListener('beforeunload', () => {
         console.warn('[AUTO] beforeunload: failed to persist XR_AUTOCONNECT:', e);
     }
 });
+
 
 // ---------- Persistent BroadcastChannels ----------
 const transcriptBC = new BroadcastChannel('scribe-transcript');
@@ -1472,17 +1471,6 @@ function showClickToPlayOverlay() {
 
 // ---------------- Devices list UI ----------------
 function updateDeviceList(devices) {
-    // Guard: if we're already in a room and a 1-device list arrives
-    // shortly after room_joined, treat it as a transient snapshot and ignore it.
-    const GRACE_WINDOW_MS = 2000; // 1-2s grace window per request
-    if (currentRoom && devices && devices.length === 1) {
-        const sinceJoin = Date.now() - lastRoomJoinedAt;
-        if (lastRoomJoinedAt > 0 && sinceJoin >= 0 && sinceJoin < GRACE_WINDOW_MS) {
-            console.warn('Ignored transient device_list (1 device) arriving within grace window', { sinceJoin, GRACE_WINDOW_MS });
-            return; // keep previous UI state; wait for the correct list
-        }
-    }
-
     if (!Array.isArray(devices)) {
         console.error('Device list is not an array:', devices);
         return;
@@ -1491,6 +1479,13 @@ function updateDeviceList(devices) {
     lastDeviceList = devices;
 
     console.log('[DEVICES] Updating device list with', devices.length, 'devices');
+
+    // Grace window: when paired, ignore transient 1-device lists immediately after room_joined
+    if (currentRoom && devices.length === 1 && Date.now() - roomJoinedTime < 1000) {
+        console.log('[DEVICES] Ignoring transient 1-device list post room_joined');
+        return;
+    }
+
     deviceListElement.innerHTML = '';
 
     const myId = XR_ID;
@@ -1970,3 +1965,4 @@ window.addEventListener('load', async () => {
 
 
 console.log('[INIT] Application initialization complete');
+//=====
