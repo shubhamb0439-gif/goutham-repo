@@ -126,6 +126,7 @@ if (IS_PROD) {
   app.set('trust proxy', 1);
 }
 
+
 const server = http.createServer(app);
 console.log('[HTTP] Server created');
 
@@ -785,7 +786,15 @@ async function tryDbAutoPair(deviceId, debugSocket = null) {
   io.to(roomId).emit("room_joined", { roomId, members });
 
   await broadcastDeviceList(roomId);
+
+  // ✅ Stabilizer: Redis adapter room propagation can be briefly behind.
+  // Broadcast once more shortly after so the list becomes consistent.
+  setTimeout(() => {
+    try { broadcastDeviceList(roomId); } catch { }
+  }, 250);
+
   broadcastPairs();
+
 
   return true;
 }
