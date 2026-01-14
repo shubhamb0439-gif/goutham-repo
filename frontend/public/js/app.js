@@ -1480,9 +1480,9 @@ function updateDeviceList(devices) {
 
     console.log('[DEVICES] Updating device list with', devices.length, 'devices');
 
-    // Grace window: when paired, ignore transient 1-device lists immediately after room_joined
-    if (currentRoom && devices.length === 1 && Date.now() - roomJoinedTime < 1000) {
-        console.log('[DEVICES] Ignoring transient 1-device list post room_joined');
+    // Grace window: when paired, ignore transient incomplete device lists immediately after room_joined
+    if (currentRoom && devices.length < 2 && Date.now() - roomJoinedTime < 2000) {
+        console.log('[DEVICES] Ignoring transient incomplete device list post room_joined');
         return;
     }
 
