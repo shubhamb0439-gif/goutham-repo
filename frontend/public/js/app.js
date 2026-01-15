@@ -709,7 +709,27 @@ function initSocket() {
     // --- your existing handlers ---
     socket.on('signal', handleSignalMessage);
     socket.on('message', handleChatMessage);
-    socket.on('device_list', updateDeviceList);
+    socket.on('device_list', (devices) => {
+        // ✅ When paired in a room, only render if we have both devices
+        // This prevents transient single-device flashes
+        if (currentRoom && Array.isArray(devices)) {
+            const myNorm = normalizeId(XR_ID);
+            const peerNorm = normalizeId(pairedPeerId);
+            const deviceNorms = devices.map(d => normalizeId(d?.xrId)).filter(Boolean);
+
+            // Only render if both devices are present in the list
+            if (peerNorm && deviceNorms.includes(myNorm) && deviceNorms.includes(peerNorm)) {
+                console.log('[DEVICES] Both devices confirmed in room-scoped list; rendering');
+                updateDeviceList(devices);
+            } else {
+                console.log('[DEVICES] Incomplete device list for paired room; skipping render to prevent flash');
+                return;
+            }
+        } else {
+            // Not paired or unpaired mode: render normally
+            updateDeviceList(devices);
+        }
+    });
     socket.on('control', handleControlCommand);
     socket.on('message-cleared', handleMessagesCleared);
     socket.on('message_history', handleMessageHistory);
@@ -736,11 +756,6 @@ function initSocket() {
             pairedPeerId = other || pairedPeerId || null;
             console.log('[PAIR] pairedPeerId =', pairedPeerId);
 
-            // ✅ Ask server for authoritative room-scoped list
-            try { socket?.emit('request_device_list'); } catch (e) {
-                console.warn('[DEVICES] request_device_list failed:', e);
-            }
-
         } catch (e) {
             console.warn('[PAIR] failed to derive pairedPeerId:', e);
             pairedPeerId = null;
@@ -750,11 +765,19 @@ function initSocket() {
         const memList = Array.isArray(members) ? members.join(', ') : '';
         addSystemMessage(`🎯 VR Room created: ${roomId}.${memList ? ` Members: ${memList}` : ''}`);
 
-        // 4) Clear UI immediately; device_list will repaint shortly
-        updateDeviceList([]);
-
-        // ✅ pairing complete = connected (AFTER room + request + UI clear)
+        // ✅ pairing complete = connected (AFTER room established)
         setStatus('Connected');
+
+        // 4) Request device_list with a grace period to allow server to compile both devices
+        // This prevents transient single-device flashes in the UI
+        setTimeout(() => {
+            try {
+                console.log('[DEVICES] Requesting authoritative room-scoped device list after grace period');
+                socket?.emit('request_device_list');
+            } catch (e) {
+                console.warn('[DEVICES] request_device_list failed:', e);
+            }
+        }, 100); // 100ms grace period for server to confirm both devices in room
 
         // ---- WebRTC flush unchanged ----
         if (pendingLocalAnswer && socket?.connected) {
