@@ -972,6 +972,50 @@ async function buildDeviceListForRoom(roomId) {
         inst
       });
 
+      // ✅ NEW: if fetchSockets returns empty array, use stable fallback instead of returning []
+      if (sockets.length === 0) {
+        dwarn(`[DEVICE_LIST][${stamp}][${inst}] fetchSockets returned EMPTY array; using stable fallback`, { roomId });
+
+        dbgToRoom(roomId, "[DEVICE_LIST] fetchSockets EMPTY (stable fallback)", {
+          roomId,
+          ioRedisReady,
+          adapterName: io?.sockets?.adapter?.constructor?.name,
+          inst
+        });
+
+        const parts = String(roomId).split(':');
+        const a = normXr(parts[1] || '');
+        const b = normXr(parts[2] || '');
+        const ids = [a, b].filter(Boolean).slice(0, 2);
+
+        const list = ids.map(id => {
+          const bRec = batteryByDevice?.get(id) || {};
+          const tRec = telemetryByDevice?.get(id) || null;
+
+          return {
+            xrId: id,
+            deviceName: 'Unknown',
+            battery: (typeof bRec.pct === 'number') ? bRec.pct : null,
+            charging: !!bRec.charging,
+            batteryTs: bRec.ts || null,
+            ...(tRec ? { telemetry: tRec } : {}),
+          };
+        });
+
+        dlog(`[DEVICE_LIST][${stamp}][${inst}] ✅ built (empty-array fallback)`, {
+          roomId,
+          xrIds: list.map(x => x.xrId),
+        });
+
+        dbgToRoom(roomId, "[DEVICE_LIST] built (empty-array fallback)", {
+          roomId,
+          xrIds: list.map(x => x.xrId),
+          inst
+        });
+
+        return list;
+      }
+
       const list = [];
       for (const s of sockets) {
         const id = normXr(s?.data?.xrId);
@@ -1087,6 +1131,9 @@ async function buildDeviceListForRoom(roomId) {
   return finalList;
 }
 
+
+
+
 const deviceListInFlight = new Map(); // roomId -> Promise
 
 // ✅ Broadcast device list: global OR room-scoped (Option B safe)
@@ -1106,6 +1153,12 @@ async function broadcastDeviceList(roomId) {
 
       const p = (async () => {
         const list = await buildDeviceListForRoom(roomId);
+        if (!Array.isArray(list) || list.length === 0) {
+          dwarn('[DEVICE_LIST] suppress empty broadcast', { roomId });
+          dbgToRoom(roomId, "[DEVICE_LIST] suppress empty broadcast", { roomId });
+          return;
+        }
+
 
         io.to(roomId).emit('device_list', list);
         dbgToRoom(roomId, "[DEVICE_LIST] broadcast done", {
@@ -4163,14 +4216,27 @@ io.on('connection', (socket) => {
 
       // ✅ If paired → ONLY devices in this pair room
       if (roomId) {
-        socket.emit('device_list', await buildDeviceListForRoom(roomId));
+        const list = await buildDeviceListForRoom(roomId);
+
+        if (!Array.isArray(list) || list.length === 0) {
+          dwarn('[request_device_list] suppress empty paired list', {
+            sid: socket.id,
+            roomId
+          });
+          return;
+        }
+
+        socket.emit('device_list', list);
         return;
       }
 
       // ✅ NOT paired yet → ONLY show *this* device (self), never global
       const xrId = normXr(socket.data?.xrId);
       if (!xrId) {
-        socket.emit('device_list', []);
+        dwarn('[request_device_list] xrId missing; suppressing empty device_list', {
+          sid: socket.id,
+          roomId: socket.data?.roomId
+        });
         return;
       }
 
@@ -4190,6 +4256,7 @@ io.on('connection', (socket) => {
       dwarn('[request_device_list] failed:', e.message);
     }
   });
+
 
 
   // -------- pair_with --------
