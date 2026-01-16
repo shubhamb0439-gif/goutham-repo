@@ -750,8 +750,8 @@ function initSocket() {
         const memList = Array.isArray(members) ? members.join(', ') : '';
         addSystemMessage(`🎯 VR Room created: ${roomId}.${memList ? ` Members: ${memList}` : ''}`);
 
-        // 4) Clear UI immediately; device_list will repaint shortly
-        updateDeviceList([]);
+        // // 4) Clear UI immediately; device_list will repaint shortly
+        // updateDeviceList([]);
 
         // ✅ pairing complete = connected (AFTER room + request + UI clear)
         setStatus('Connected');
@@ -1477,6 +1477,15 @@ function updateDeviceList(devices) {
     lastDeviceList = devices;
 
     console.log('[DEVICES] Updating device list with', devices.length, 'devices');
+    // ✅ Guard: never render empty list while paired; it causes 0-device flicker on transient races
+    if (currentRoom && devices.length === 0) {
+        console.warn('[DEVICES] Suppressing empty device_list while paired', {
+            currentRoom,
+            pairedPeerId
+        });
+        return;
+    }
+
     deviceListElement.innerHTML = '';
 
     const myId = XR_ID;
