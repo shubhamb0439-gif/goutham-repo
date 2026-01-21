@@ -584,7 +584,9 @@ function initSocket() {
                 console.warn('[CLEAR] Failed to read/clear CLEAR_KEY:', e);
             }
 
-            setStatus('Connected');
+            setStatus('Connecting');
+            console.log('[STATUS] socket connected -> Connecting (waiting for room_joined)');
+
 
             // keep refresh-safe autoconnect behavior
             try { localStorage.setItem(AUTO_KEY, '1'); } catch { }
@@ -709,7 +711,14 @@ function initSocket() {
     // --- your existing handlers ---
     socket.on('signal', handleSignalMessage);
     socket.on('message', handleChatMessage);
-    socket.on('device_list', updateDeviceList);
+    socket.on('device_list', (devices) => {
+        console.log('[SOCKET] device_list event received', {
+            currentRoom,
+            len: Array.isArray(devices) ? devices.length : null
+        });
+        updateDeviceList(devices);
+    });
+
     socket.on('control', handleControlCommand);
     socket.on('message-cleared', handleMessagesCleared);
     socket.on('message_history', handleMessageHistory);
@@ -751,7 +760,9 @@ function initSocket() {
         addSystemMessage(`🎯 VR Room created: ${roomId}.${memList ? ` Members: ${memList}` : ''}`);
 
         // // 4) Clear UI immediately; device_list will repaint shortly
-        // updateDeviceList([]);
+        console.log('[DEVICES] room_joined -> clearing UI; will repaint on device_list');
+        updateDeviceList([]);
+
 
         // ✅ pairing complete = connected (AFTER room + request + UI clear)
         setStatus('Connected');
@@ -1476,15 +1487,27 @@ function updateDeviceList(devices) {
 
     lastDeviceList = devices;
 
+    console.log('[DEVICES] device_list recv', {
+        socketConnected: !!socket?.connected,
+        currentRoom,
+        pairedPeerId,
+        count: devices.length,
+        ids: devices.map(d => d?.xrId).filter(Boolean)
+    });
+
+
     console.log('[DEVICES] Updating device list with', devices.length, 'devices');
-    // ✅ Guard: never render empty list while paired; it causes 0-device flicker on transient races
+    // ✅ IMPORTANT: Do NOT suppress empty lists.
+    // Empty lists can occur during pairing / peer_left / reconnect races.
+    // We must render server truth to keep Dock + Cockpit in sync.
     if (currentRoom && devices.length === 0) {
-        console.warn('[DEVICES] Suppressing empty device_list while paired', {
+        console.warn('[DEVICES] empty device_list received while paired (rendering anyway)', {
             currentRoom,
             pairedPeerId
         });
-        return;
+        // DO NOT return
     }
+
 
     deviceListElement.innerHTML = '';
 
@@ -1523,8 +1546,11 @@ function updateDeviceList(devices) {
         const isSelfId = devIdNorm === normalizeId(myId);
         if (isSelfId) sameIdCount += 1;
 
-        // If we're disconnected, hide our own Desktop entry
+
+        // If disconnected, hide our own Desktop entry (prevents showing stale self while offline)
         if (isSelfId && !(socket && socket.connected)) return;
+
+
 
         const name = isSelfId
             ? (DEVICE_NAME || 'This device')
@@ -1934,9 +1960,14 @@ window.addEventListener('load', async () => {
         console.log('[APP] Auto-connect enabled for reload — dialing now');
 
         // ✅ Ensure XR_ID is set for this reload auto-connect (no effect on manual connects)
-        const chosenId = normalizeId(xrIdInput.value) || ALLOWED_ID;
+        // ✅ Reload auto-connect: XR_ID must come ONLY from input (no fallback)
+        const chosenId = normalizeId(xrIdInput.value);
         XR_ID = chosenId;
-        DEVICE_NAME = isAllowedId(XR_ID) ? `Desktop${ALLOWED_ID_NUM}` : 'Desktop';
+
+        console.log('[AUTO] Reload auto-connect with XR_ID:', XR_ID);
+
+
+        DEVICE_NAME = 'Desktop';
 
         setStatus('Connecting');
         if (socket?.io) socket.io.opts.reconnection = true;

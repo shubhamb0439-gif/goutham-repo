@@ -1,10 +1,15 @@
 // ------------------------bolt------------ dashboard.js (DROP-IN) ------------------------------------
 
-// Fixed XR IDs shown on the dashboard
-const XR_LEFT = 'XR-1234';  // XR VISION
-const XR_RIGHT = 'XR-1238';  // XR DOCK
+// ===== DB-driven pairs (Platform ↔ Dashboard parity) =====
+let mappedPairs = [];            // [{ providerXrId, scribeXrId, providerName, scribeName }]
+const mappedPartner = new Map(); // xrId -> partnerXrId
 
-const STATIC_BATTERY_LEFT = 83;
+// Primary pair for the existing center tiles/metrics (keep current UI behavior)
+let PRIMARY_LEFT = 'XR-1234';
+let PRIMARY_RIGHT = 'XR-1238';
+
+const STATIC_BATTERY_LEFT = 83; // keep fallback
+
 
 // ===== XR Hub Dashboard permissions (System_Screens.id = 1) =====
 const XR_HUB_SCREEN_ID = 1;   // "XR Hub Dashboard" in System_Screens
@@ -96,9 +101,9 @@ function applyHubReadOnlyUI() {
 
 
 // ===== A) Per-device WebRTC quality cache =====
-const XR_ANDROID = 'XR-1234';   // Android (left)
-const XR_DOCK = 'XR-1238';   // Dock (right)
-
+// (Keep the tiles/center box behavior the same, but point at PRIMARY pair.)
+let XR_ANDROID = PRIMARY_LEFT;  // left of primary
+let XR_DOCK = PRIMARY_RIGHT;    // right of primary
 const qualityStore = new Map(); // id -> { ts:[], jitter:[], rtt:[], loss:[], kbps:[] }
 function getQ(id) {
   if (!qualityStore.has(id)) {
@@ -163,7 +168,8 @@ function updateConnBorder() {
   if (!box) return;
 
   // We key the green ring off the DOCK (XR_RIGHT) by default
-  const streaming = isStreaming(typeof XR_RIGHT !== 'undefined' ? XR_RIGHT : 'XR-1238');
+  const streaming = isStreaming(XR_DOCK || PRIMARY_RIGHT || 'XR-1238');
+
 
   // If you use Tailwind rings:
   box.classList.toggle('ring-2', streaming);
@@ -204,10 +210,59 @@ let gotInitialDevices = false;
 let gotInitialPairs = false;
 
 function renderIfReady() {
-  // Only block the very first paint; after both arrive once, render freely.
   if (!gotInitialDevices || !gotInitialPairs) return;
   renderDevices();
 }
+
+// ===== DB mappings loader (Dashboard rows must exist even when offline) =====
+async function loadMappedPairsFromDB() {
+  try {
+    const res = await fetch('/api/platform/scribe-provider-mapping', {
+      method: 'GET',
+      credentials: 'include',
+      headers: { 'Accept': 'application/json' }
+    });
+
+    if (!res.ok) {
+      console.warn('[DASHBOARD] mapping API failed:', res.status);
+      mappedPairs = [];
+      mappedPartner.clear();
+      return;
+    }
+
+    const data = await res.json();
+    const rows = Array.isArray(data?.mappings) ? data.mappings : [];
+
+    mappedPairs = rows
+      .map(m => ({
+        providerXrId: m.provider_xr_id || m?.provider?.xrId || null,
+        scribeXrId: m.scribe_xr_id || m?.scribe?.xrId || null,
+        providerName: m?.provider?.name || null,
+        scribeName: m?.scribe?.name || null,
+      }))
+      .filter(p => !!p.providerXrId && !!p.scribeXrId);
+
+    mappedPartner.clear();
+    for (const p of mappedPairs) {
+      mappedPartner.set(p.providerXrId, p.scribeXrId);
+      mappedPartner.set(p.scribeXrId, p.providerXrId);
+    }
+
+    if (mappedPairs.length) {
+      PRIMARY_LEFT = mappedPairs[0].providerXrId;
+      PRIMARY_RIGHT = mappedPairs[0].scribeXrId;
+      XR_ANDROID = PRIMARY_LEFT;
+      XR_DOCK = PRIMARY_RIGHT;
+    }
+
+    console.log('[DASHBOARD] Loaded mappings:', mappedPairs.length);
+  } catch (err) {
+    console.warn('[DASHBOARD] Failed to load mappings:', err);
+    mappedPairs = [];
+    mappedPartner.clear();
+  }
+}
+
 
 // Helper: battery icon + % text next to it
 function batteryMarkup(xrId) {
@@ -230,26 +285,35 @@ function inAnyPair(xrId) {
   return false;
 }
 
-// ------- Connection state logic -------
+// ------- Connection state logic (DB-mapped partner-aware) -------
 function computeState(xrId) {
   const online = onlineDevices.has(xrId);
-  const partner = xrId === XR_LEFT ? XR_RIGHT : XR_LEFT;
-  const partnerOnline = onlineDevices.has(partner);
-  const pairKey = [xrId, partner].sort().join('|');
-  const paired = activePairs.has(pairKey);
 
-  if (!online) return 'busy';        // 🔴 red - device is offline
+  // Partner comes from DB mapping; fallback to primary pair if needed
+  const partner =
+    mappedPartner.get(xrId) ||
+    (xrId === PRIMARY_LEFT
+      ? PRIMARY_RIGHT
+      : xrId === PRIMARY_RIGHT
+        ? PRIMARY_LEFT
+        : null);
 
-  // 🟢 green - show green if BOTH devices are online (regardless of formal pairing status)
-  // This fixes the race condition where devices connect but pairing event arrives slightly delayed
-  if (paired || (online && partnerOnline)) return 'available';
+  const partnerOnline = partner ? onlineDevices.has(partner) : false;
 
-  return 'connecting';               // 🟠 amber - device online but partner not yet online
+  // 🔴 red - both offline
+  if (!online && !partnerOnline) return 'busy';
+
+  // 🟢 green - both online
+  if (online && partnerOnline) return 'available';
+
+  // 🟠 amber - one online, one offline
+  return 'connecting';
 }
+
 
 // ---- Cache last connection metrics so the box never goes blank ----
 function paintConnMetricsFromCache() {
-  const dockId = (typeof XR_RIGHT !== 'undefined' && XR_RIGHT) ? XR_RIGHT : 'XR-1238';
+  const dockId = XR_DOCK || PRIMARY_RIGHT || 'XR-1238';
   const q = lastQuality.get(dockId);
   if (!q) return;
 
@@ -488,30 +552,74 @@ function paintCenterBox() {
 
 
 
-// ------- Rows -------
-function buildRows() {
-  // ✅ Independent states
-  const leftState = computeState(XR_LEFT);
-  const rightState = computeState(XR_RIGHT);
 
-  // Live battery % for XR-1234 (left). Falls back to STATIC_BATTERY_LEFT.
-  const st = batteryState.get(XR_LEFT);
-  const batteryPct = (st && typeof st.pct === 'number') ? st.pct : STATIC_BATTERY_LEFT;
+// ------- Rows (DB-driven) -------
+function buildRows() {
+  // 1) If DB mappings exist, render one row per mapping (even if offline)
+  if (mappedPairs.length) {
+    return mappedPairs.map((p, i) => {
+      const providerState = computeState(p.providerXrId);
+      const scribeState = computeState(p.scribeXrId);
+
+      // Battery shown only for provider (same behavior as before)
+      const st = batteryState.get(p.providerXrId);
+      const batteryPct =
+        (st && typeof st.pct === 'number') ? st.pct : STATIC_BATTERY_LEFT;
+
+      return {
+        label: `Provider ${i + 1}${p.providerName ? ` — ${p.providerName}` : ''}`,
+        left: {
+          xrId: p.providerXrId,
+          text: `XR VISION : ${p.providerXrId.replace('XR-', '')}`,
+          state: providerState,
+          battery: batteryPct
+        },
+        scribe: `Scribe ${i + 1}${p.scribeName ? ` — ${p.scribeName}` : ''}`,
+        right: {
+          xrId: p.scribeXrId,
+          text: `XR VISION DOCK : ${p.scribeXrId.replace('XR-', '')}`,
+          state: scribeState
+        }
+      };
+    });
+  }
+
+  // 2) Fallback — preserves old hardcoded behavior if DB mappings fail
+  const leftState = computeState(PRIMARY_LEFT);
+  const rightState = computeState(PRIMARY_RIGHT);
+
+  const st = batteryState.get(PRIMARY_LEFT);
+  const batteryPct =
+    (st && typeof st.pct === 'number') ? st.pct : STATIC_BATTERY_LEFT;
 
   return [
     {
       label: 'Provider 1',
-      left: { text: `XR VISION : ${XR_LEFT.replace('XR-', '')}`, state: leftState, battery: batteryPct },
+      left: {
+        xrId: PRIMARY_LEFT,
+        text: `XR VISION : ${PRIMARY_LEFT.replace('XR-', '')}`,
+        state: leftState,
+        battery: batteryPct
+      },
       scribe: 'Scribe 1',
-      right: { text: `XR VISION DOCK : ${XR_RIGHT.replace('XR-', '')}`, state: rightState }
+      right: {
+        xrId: PRIMARY_RIGHT,
+        text: `XR VISION DOCK : ${PRIMARY_RIGHT.replace('XR-', '')}`,
+        state: rightState
+      }
     }
   ];
 }
 
+
 // Render
 function rowHTML({ label, left, scribe, right }) {
-  const leftChip = `<button class="device-chip" data-xr="${XR_LEFT}">${chip(left.text, left.state)}</button>`;
-  const rightChip = `<button class="device-chip" data-xr="${XR_RIGHT}">${chip(right.text, right.state)}</button>`;
+  const leftId = left.xrId;
+  const rightId = right.xrId;
+
+  const leftChip = `<button class="device-chip" data-xr="${leftId}">${chip(left.text, left.state)}</button>`;
+  const rightChip = `<button class="device-chip" data-xr="${rightId}">${chip(right.text, right.state)}</button>`;
+
 
   return `
   <div class="grid grid-cols-12 gap-3 md:gap-4 items-center">
@@ -523,12 +631,12 @@ function rowHTML({ label, left, scribe, right }) {
         ${leftChip}
         <div class="flex gap-2">
           <button class="icon-btn hub-edit-btn" title="Edit">${Icon.pen}</button>
-          ${renderSignalBars(XR_LEFT)}
-          ${batteryMarkup(XR_LEFT)}
+          ${renderSignalBars(leftId)}
+          ${batteryMarkup(leftId)}
         </div>
       </div>
-      ${renderNetBadges(XR_LEFT)}
-      ${renderSysPills(XR_LEFT)}   <!-- NEW: Android-only RAM/TEMP pills -->
+      ${renderNetBadges(leftId)}
+      ${renderSysPills(leftId)}  <!-- NEW: Android-only RAM/TEMP pills -->
 
 
       
@@ -574,11 +682,12 @@ function rowHTML({ label, left, scribe, right }) {
         ${rightChip}
         <div class="flex gap-2">
           <button class="icon-btn hub-edit-btn" title="Edit">${Icon.pen}</button>
-          ${renderSignalBars(XR_RIGHT)}
+          ${renderSignalBars(rightId)}
           <button class="icon-btn hub-msg-btn" title="Message">${Icon.mail}</button>
         </div>
       </div>
-      ${renderNetBadges(XR_RIGHT)}
+      ${renderNetBadges(rightId)}
+
       
 
       
@@ -721,7 +830,8 @@ function initSocket() {
 
     // 3) Keep your center Dock box (metricJitter/Loss/RTT) using your existing cache logic
     //    Choose the *latest sample* for Dock and store in lastQuality
-    const dockId = (typeof XR_RIGHT !== 'undefined' && XR_RIGHT) ? XR_RIGHT : 'XR-1238';
+    const dockId = XR_DOCK || PRIMARY_RIGHT || 'XR-1238';
+
     // pick the freshest item for this dock id
     const freshestDock = items
       .filter(s => s.xrId === dockId)
@@ -924,10 +1034,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadHubPermissions();
   applyHubReadOnlyUI();
 
-  // 2) Now wire sockets + live telemetry
+  // 2) Load DB mappings so rows exist even when offline (Platform parity)
+  await loadMappedPairsFromDB();
+
+  // ✅ Render immediately (offline rows will show RED)
+  renderDevices();
+
+  // 3) Now wire sockets + live telemetry (will flip colors as devices connect)
   initSocket();
 
-  // 3) Paint date after DOM is ready and refresh it
+  // 4) Paint date after DOM is ready and refresh it
   paintNowStamp();
   setInterval(paintNowStamp, 60 * 1000); // update every minute
 });
+

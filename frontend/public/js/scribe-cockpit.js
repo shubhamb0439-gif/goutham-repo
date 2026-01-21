@@ -228,6 +228,20 @@ function setStatus(status) {
 
 // ==========================
 // Devices list + device-aware status
+
+let currentRoom = null; // cockpit view-only room, set from room_joined
+
+function updateConnectionStatus(src = '') {
+  const connected = !!(socket && socket.connected);
+  const status =
+    !connected ? 'Disconnected' :
+      !currentRoom ? 'Connecting' :
+        'Connected';
+
+  console.log('[COCKPIT][STATUS]', { src, connected, currentRoom, status });
+  setStatus(status);
+}
+
 // ==========================
 function showNoDevices() {
   if (!deviceListEl) return;
@@ -245,24 +259,37 @@ function showNoDevices() {
  * - 0 devices   -> Disconnected (red)
  */
 function updateDeviceList(devices) {
+  // ✅ Server is authoritative — never trust cached UI state
   if (!Array.isArray(devices)) devices = [];
 
-  // Render the list
+  // 🔥 Always clear first (prevents stale XR-8005)
   deviceListEl.innerHTML = '';
-  devices.forEach(d => {
-    const name = d.deviceName || d.name || (d.xrId ? `Device (${d.xrId})` : 'Unknown');
-    const li = document.createElement('li');
-    li.className = 'text-gray-300';
-    li.textContent = d.xrId ? `${name} (${d.xrId})` : name;
-    deviceListEl.appendChild(li);
-  });
-  if (devices.length === 0) showNoDevices();
 
-  // Set status by count
-  if (devices.length >= 2) setStatus('Connected');
-  else if (devices.length === 1) setStatus('Connecting');
-  else setStatus('Disconnected');
+  // ✅ Empty is allowed (cockpit may be unpaired or joining). Render it, but never drive status by count.
+  if (devices.length === 0) {
+    showNoDevices();
+  } else {
+    devices.forEach(d => {
+      if (!d || !d.xrId) return;
+      const name = d.deviceName || `Device (${d.xrId})`;
+      const li = document.createElement('li');
+      li.className = 'text-gray-300';
+      li.textContent = `${name} (${d.xrId})`;
+      deviceListEl.appendChild(li);
+    });
+  }
+
+  // ✅ Status rule: socket + room only (never device count)
+  console.log('[COCKPIT][DEVICES] render', {
+    count: devices.length,
+    xrIds: devices.map(d => d?.xrId).filter(Boolean),
+    currentRoom
+  });
+  updateConnectionStatus('device_list');
+
 }
+
+
 
 // ==========================
 // Transcript helpers
@@ -1280,29 +1307,89 @@ function connectTo(endpointBase, onFailover) {
   return new Promise(resolve => {
     setStatus('Connecting'); // initial pill
     SERVER_URL = endpointBase;
-    const opts = { path: '/socket.io', transports: ['websocket'], reconnection: true, secure: SERVER_URL.startsWith('https://') };
+
+    const opts = {
+      path: '/socket.io',
+      transports: ['websocket'],
+      reconnection: true,
+      secure: SERVER_URL.startsWith('https://')
+    };
+
     try { socket?.close(); } catch { }
     socket = window.io(SERVER_URL, opts);
 
     let connected = false;
     const failTimer = setTimeout(() => { if (!connected) onFailover?.(); }, 4000);
 
-    socket.on('connect', () => {
-      connected = true; clearTimeout(failTimer);
-      socket.emit('request_device_list');
-      socket.on('device_list', updateDeviceList); // <- device count will set the status pill
+    socket.on('connect', async () => {
+      connected = true;
+      clearTimeout(failTimer);
+
+      // ✅ Attach listeners BEFORE any requests (prevents missing first device_list)
+      socket.off('device_list', updateDeviceList);
+      socket.off('signal', handleSignalMessage);
+      socket.off('room_joined');
+
+      socket.on('device_list', updateDeviceList); // drives pill + device list
       socket.on('signal', handleSignalMessage);
-      // Do NOT force status to "Connected" here; device_list decides based on count.
+
+      // ✅ If/when server joins cockpit to pair room, re-request list to mirror XR Vision Dock
+      socket.on('room_joined', ({ roomId, reason, members } = {}) => {
+        currentRoom = roomId || null;
+
+        console.log('[COCKPIT][ROOM] room_joined', {
+          roomId,
+          reason,
+          members,
+          socketId: socket.id,
+          cockpitForXrId: socket.data?.cockpitForXrId || null
+        });
+
+        updateConnectionStatus('room_joined');
+
+        // Immediately request authoritative list (room-scoped if paired)
+        try { socket.emit('request_device_list'); } catch (e) {
+          console.warn('[COCKPIT][REQ_LIST] failed after room_joined', e);
+        }
+      });
+
+
+      // ✅ Identify as COCKPIT using logged-in user's mapped xrId
+      try {
+        const meRes = await fetch('/api/platform/me', { credentials: 'include' });
+        const me = await meRes.json();
+        const xrId = (me?.xrId || me?.xr_id || '').toString().trim();
+
+        if (xrId) {
+          socket.emit('identify', {
+            xrId,
+            deviceName: 'XR Dock (Scribe Cockpit)',
+            clientType: 'cockpit'
+          });
+        } else {
+          console.warn('[SCRIBE] /api/platform/me returned no xrId');
+        }
+      } catch (e) {
+        console.warn('[SCRIBE] Failed to load /api/platform/me for identify:', e);
+      }
+
+      // ✅ Always request once after identify (server will reply [] or room list)
+      try { socket.emit('request_device_list'); } catch { }
+
       resolve();
     });
 
     socket.on('connect_error', err => console.warn('[SCRIBE] connect_error:', err));
-    socket.on('disconnect', () => {
+    socket.on('disconnect', (reason) => {
+      console.warn('[COCKPIT] disconnect', { reason, socketId: socket?.id, currentRoom });
+      currentRoom = null;
       showNoDevices();
-      setStatus('Disconnected'); // socket fully disconnected
+      updateConnectionStatus('disconnect');
     });
+
   });
 }
+
 
 // ==========================
 // Restore state from localStorage
