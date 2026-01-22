@@ -157,6 +157,8 @@ const fallback = isLocal ? AZURE : NGROK;
 let SERVER_URL = null;
 let socket = null;
 
+
+
 // In-memory UI state
 let latestSoapNote = {};                   // last received/edited SOAP payload
 const transcriptState = { byKey: {} };     // merges partial transcript chunks per (from->to)
@@ -230,6 +232,9 @@ function setStatus(status) {
 // Devices list + device-aware status
 
 let currentRoom = null; // cockpit view-only room, set from room_joined
+
+let COCKPIT_FOR_XR_ID = null; // client-known xrId (from /api/platform/me)
+
 
 function updateConnectionStatus(src = '') {
   const connected = !!(socket && socket.connected);
@@ -1330,19 +1335,42 @@ function connectTo(endpointBase, onFailover) {
       socket.off('signal', handleSignalMessage);
       socket.off('room_joined');
 
-      socket.on('device_list', updateDeviceList); // drives pill + device list
+      socket.on('device_list', updateDeviceList); // renders list only (status is socket+room based)
       socket.on('signal', handleSignalMessage);
 
       // ✅ If/when server joins cockpit to pair room, re-request list to mirror XR Vision Dock
       socket.on('room_joined', ({ roomId, reason, members } = {}) => {
+        const prevRoom = currentRoom;
         currentRoom = roomId || null;
+
+        // ✅ MANDATORY: if room changed, wipe transcript UI + state to prevent cross-room bleed
+        if (prevRoom && currentRoom && prevRoom !== currentRoom) {
+          console.warn('[COCKPIT][ROOM] room changed → clearing transcript + state', { prevRoom, currentRoom });
+
+          // clear incremental transcript merge state + timers
+          Object.values(transcriptState.byKey || {}).forEach(slot => {
+            try { if (slot?.flushTimer) clearTimeout(slot.flushTimer); } catch { }
+          });
+          transcriptState.byKey = {};
+
+          // clear transcript UI + persisted history (prevents showing old pair’s transcripts)
+          try { transcriptEl.innerHTML = ''; } catch { }
+          try { ensureTranscriptPlaceholder(); } catch { }
+          try { saveHistory([]); } catch { }
+          try { saveActiveItemId(''); } catch { }
+
+          // clear SOAP baseline so UI doesn’t show old pair’s SOAP
+          try { latestSoapNote = {}; saveLatestSoap({}); } catch { }
+          try { if (!soapGenerating) renderSoapBlank(); } catch { }
+        }
+
 
         console.log('[COCKPIT][ROOM] room_joined', {
           roomId,
           reason,
           members,
           socketId: socket.id,
-          cockpitForXrId: socket.data?.cockpitForXrId || null
+          cockpitForXrId: COCKPIT_FOR_XR_ID
         });
 
         updateConnectionStatus('room_joined');
@@ -1359,6 +1387,8 @@ function connectTo(endpointBase, onFailover) {
         const meRes = await fetch('/api/platform/me', { credentials: 'include' });
         const me = await meRes.json();
         const xrId = (me?.xrId || me?.xr_id || '').toString().trim();
+        COCKPIT_FOR_XR_ID = xrId || null;
+
 
         if (xrId) {
           socket.emit('identify', {

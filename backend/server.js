@@ -514,6 +514,47 @@ function getClientSocketByXrIdCI(xrId) {
   return null;
 }
 
+
+// NEW: cluster-aware lookup (multi-instance safe)
+// Finds a socket by xrId across all instances (requires Redis adapter).
+async function getClientSocketByXrIdCI_Cluster(XR, debugSocket = null) {
+  const wanted = normXr(XR);
+  if (!wanted) return null;
+
+  try {
+    const sockets = await io.fetchSockets(); // cluster-wide with Redis adapter
+    const found = sockets.find(s =>
+      typeof s.data?.xrId === 'string' &&
+      normXr(s.data.xrId) === wanted &&
+      s.data?.clientType !== 'cockpit'
+    ) || null;
+
+    if (debugSocket) {
+      dbgToSocket(debugSocket, "[COCKPIT][FIND_PRIMARY] result", {
+        wanted,
+        foundSocketId: found?.id || null,
+        foundClientType: found?.data?.clientType || null,
+        foundRoomId: found?.data?.roomId || null
+      });
+    }
+
+    dlog('[COCKPIT][FIND_PRIMARY] cluster lookup', {
+      wanted,
+      found: !!found,
+      foundSocketId: found?.id || null,
+      foundRoomId: found?.data?.roomId || null
+    });
+
+    return found;
+  } catch (e) {
+    dwarn('[COCKPIT][FIND_PRIMARY] fetchSockets failed', { wanted, err: e?.message || e });
+    if (debugSocket) dbgToSocket(debugSocket, "[COCKPIT][FIND_PRIMARY] fetchSockets failed", {
+      wanted, err: e?.message || String(e)
+    });
+    return null;
+  }
+}
+
 // Helper: clear pairing on disconnect (we will call this in disconnect later)
 function clearPairByXrId(xrId) {
   const me = normXr(xrId);
@@ -4113,13 +4154,20 @@ io.on('connection', (socket) => {
       socket.data.connectedAt = Date.now();
 
       // Try to find the primary XR socket for this XR id
-      const primary = getClientSocketByXrIdCI(XR);
+      const primary = await getClientSocketByXrIdCI_Cluster(XR, socket);
+
 
       // If that primary XR socket is already paired, join cockpit to that same pair room
       const roomId = primary?.data?.roomId;
+      dlog('[COCKPIT][IDENTIFY] primary+room', {
+        cockpitForXrId: XR,
+        primarySocketId: primary?.id || null,
+        roomId: primary?.data?.roomId || null
+      });
+
       if (roomId) {
         try {
-          socket.join(roomId);
+          await socket.join(roomId);
           socket.data.roomId = roomId;
 
           // Let cockpit know which room it joined (helps client re-request device_list)
@@ -4136,8 +4184,16 @@ io.on('connection', (socket) => {
           dlog('[COCKPIT] joined room', { xrId: XR, roomId, socketId: socket.id });
         } catch (e) {
           dwarn('[COCKPIT] failed to join room', { xrId: XR, roomId, err: e?.message || e });
+
+          // ✅ ensure cockpit state resets deterministically
+          socket.data.roomId = null;
+          socket.emit('room_joined', { roomId: null, reason: 'cockpit_join_failed' });
           socket.emit('device_list', []);
+          dlog('[COCKPIT][IDENTIFY] join failed → sent room_joined(null)+empty list', {
+            socketId: socket.id, cockpitForXrId: XR, roomId
+          });
         }
+
       } else {
         socket.emit('room_joined', { roomId: null, reason: 'target_not_paired_yet' });
         dlog('[COCKPIT] no room yet (target not paired)', { cockpitForXrId: XR, socketId: socket.id });
@@ -4178,11 +4234,15 @@ io.on('connection', (socket) => {
         clearPairByXrId(XR);
         // ✅ Also clear partner socket roomId (prevents stale "I'm still paired" state)
         if (oldPartner) {
-          const pSock = getClientSocketByXrIdCI(oldPartner);
+          const pSock = await getClientSocketByXrIdCI_Cluster(oldPartner);
           if (pSock) {
             try { pSock.data.roomId = null; } catch { }
+            dlog('[IDENTIFY] cleared partner roomId (cluster)', { xrId: XR, oldPartner, partnerSocketId: pSock.id });
+          } else {
+            dlog('[IDENTIFY] partner socket not found (cluster) to clear roomId', { xrId: XR, oldPartner });
           }
         }
+
 
 
         // Best-effort: disconnect the old socket
@@ -4294,7 +4354,8 @@ io.on('connection', (socket) => {
         dlog('[COCKPIT][REQ_LIST] no room yet, attempting join', { socketId: socket.id, target });
 
         if (target) {
-          const primary = getClientSocketByXrIdCI(target);
+          const primary = await getClientSocketByXrIdCI_Cluster(target, socket);
+
           const targetRoom = primary?.data?.roomId || null;
 
           dlog('[COCKPIT][REQ_LIST] primary lookup', {
@@ -4306,9 +4367,10 @@ io.on('connection', (socket) => {
 
           if (targetRoom) {
             try {
-              socket.join(targetRoom);
+              await socket.join(targetRoom);
               socket.data.roomId = targetRoom;
               socket.emit('room_joined', { roomId: targetRoom });
+
 
               const list = await buildDeviceListForRoom(targetRoom);
               socket.emit('device_list', Array.isArray(list) ? list : []);
@@ -4321,7 +4383,9 @@ io.on('connection', (socket) => {
         }
 
         // If still not paired, always respond (prevents stale UI)
+        socket.emit('room_joined', { roomId: null, reason: 'cockpit_not_paired_yet' });
         socket.emit('device_list', []);
+        dlog('[COCKPIT][REQ_LIST] still not paired; sent empty list', { socketId: socket.id, target });
         return;
       }
 
@@ -4958,12 +5022,17 @@ io.on('connection', (socket) => {
         const partner = clearPairByXrId(xrId);
 
         // ✅ clear partner's roomId so routing doesn't get stuck on dead room
+        // ✅ clear partner's roomId so routing doesn't get stuck on dead room (cluster-safe)
         if (oldPartner) {
-          const partnerSocket = clients.get(oldPartner);
-          if (partnerSocket?.data?.roomId) {
-            partnerSocket.data.roomId = null;
+          const partnerSocket = await getClientSocketByXrIdCI_Cluster(oldPartner, socket);
+          if (partnerSocket) {
+            try { partnerSocket.data.roomId = null; } catch { }
+            dlog('[disconnect] cleared partner roomId (cluster)', { xrId, oldPartner, partnerSocketId: partnerSocket.id });
+          } else {
+            dlog('[disconnect] partner socket not found (cluster) to clear roomId', { xrId, oldPartner });
           }
         }
+
 
         if (partner) {
           dlog('[PAIR] cleared pairing', { xrId, partner });

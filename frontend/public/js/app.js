@@ -733,7 +733,9 @@ function initSocket() {
         console.log('[PAIR] room_joined:', roomId, members);
 
         // 1) Authoritative room routing
-        currentRoom = roomId;
+        currentRoom = roomId || null;
+        console.log('[PAIR] currentRoom set', { currentRoom });
+
 
         // 2) Determine peer safely
         try {
@@ -1050,7 +1052,7 @@ function handleMessageHistory(data) {
 
 function createPeerConnection() {
     console.log('[WEBRTC] Creating new peer connection');
-    stopStream();
+
     const turnConfig = window.TURN_CONFIG || {};
     console.log('[WEBRTC] TURN config:', turnConfig);
 
@@ -1104,48 +1106,6 @@ function createPeerConnection() {
         if (!remoteStream.getTracks().some(t => t.id === event.track.id)) {
             console.log('[WEBRTC] Adding track to remote stream');
             remoteStream.addTrack(event.track);
-        }
-
-        // Start the monitor the first time we see a remote track
-        if (!qualityStarted) {
-            qualityStarted = true;
-            console.log('[QUALITY] starting monitor (ontrack)…');
-
-            if (window.__stopQuality) { try { window.__stopQuality(); } catch { } }
-            window.__stopQuality = window.startWebRtcQualityMonitor(pc, {
-                intervalMs: 3000, // sample every ~3s
-                onSample: (s) => {
-                    console.log('[QUALITY] sample', s);
-
-                    // 1) Existing small “Connection” tiles (dashboard summary)
-                    try {
-                        (window.socket || socket)?.emit('webrtc_quality', {
-                            xrId: XR_ID,          // desktop id (XR-1238)
-                            ts: Date.now(),
-                            jitterMs: s.jitterMs,
-                            lossPct: s.lossPct,
-                            rttMs: s.rttMs,
-                            bitrateKbps: s.bitrateKbps ?? null,
-                            fps: s.fps,
-                            dropped: s.dropped,
-                            nackCount: s.nackCount
-                        });
-                    } catch { }
-
-                    // 2) NEW: feed the time-series modal charts for the Android peer
-                    try {
-                        (window.socket || socket)?.emit('quality_stats', {
-                            xrId: (pairedPeerId || currentPeerId() || XR_ID),
-                            ts: Date.now(),
-                            jitterMs: s.jitterMs ?? null,
-                            rttMs: s.rttMs ?? null,
-                            lossPct: s.lossPct ?? null,
-                            // include if your monitor returns it (some versions do)
-                            bitrateKbps: s.bitrateKbps ?? null,
-                        });
-                    } catch { }
-                }
-            });
         }
 
         videoElement.play().catch((e) => {
