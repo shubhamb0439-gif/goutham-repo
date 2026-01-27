@@ -4145,47 +4145,49 @@ io.on('connection', (socket) => {
     // -------------------- Cockpit / XR Dock (view-only) --------------------
     // If this socket is the Scribe Cockpit, it should NOT be treated as a real XR device.
     // It should only "subscribe" to the same pair room as the real XR Dock XR socket.
+    // It should only "subscribe" to the same pair room as the real XR Dock XR socket.
     if (clientType === 'cockpit') {
       socket.data.clientType = 'cockpit';
       socket.data.deviceName = deviceName || 'XR Dock (Scribe Cockpit)';
-      socket.data.cockpitForXrId = XR;     // ✅ cockpit watches this XR (target)
+
+      // ✅ cockpit watches this XR (target)
+      socket.data.cockpitForXrId = XR;
       dlog('[COCKPIT][IDENTIFY] viewer socket', { socketId: socket.id, cockpitForXrId: XR });
 
       socket.data.connectedAt = Date.now();
 
-      // Try to find the primary XR socket for this XR id
+      // Try to find the primary XR socket for this XR id (cluster-safe)
       const primary = await getClientSocketByXrIdCI_Cluster(XR, socket);
+      // ✅ Fallback: if cluster lookup misses (timing/adapter), use local map as backup
+      const primaryLocal = clients?.get?.(XR) || null;
+      const primaryFinal = primary || primaryLocal;
 
-
-      // If that primary XR socket is already paired, join cockpit to that same pair room
-      const roomId = primary?.data?.roomId;
+      const roomId = primaryFinal?.data?.roomId || null;
       dlog('[COCKPIT][IDENTIFY] primary+room', {
         cockpitForXrId: XR,
-        primarySocketId: primary?.id || null,
-        roomId: primary?.data?.roomId || null
+        primarySocketId: primaryFinal?.id || null,
+        roomId
       });
 
+      // ✅ CASE 1: Primary is paired → join same pair room and mirror room device_list
       if (roomId) {
         try {
           await socket.join(roomId);
           socket.data.roomId = roomId;
 
-          // Let cockpit know which room it joined (helps client re-request device_list)
           socket.emit('room_joined', { roomId });
 
-          // Send/broadcast device list for that room so cockpit mirrors XR Vision Dock immediately
-          // ✅ Send list directly to cockpit (do not broadcast)
           try {
             const list = await buildDeviceListForRoom(roomId);
             socket.emit('device_list', Array.isArray(list) ? list : []);
           } catch (e) {
             socket.emit('device_list', []);
           }
+
           dlog('[COCKPIT] joined room', { xrId: XR, roomId, socketId: socket.id });
         } catch (e) {
           dwarn('[COCKPIT] failed to join room', { xrId: XR, roomId, err: e?.message || e });
 
-          // ✅ ensure cockpit state resets deterministically
           socket.data.roomId = null;
           socket.emit('room_joined', { roomId: null, reason: 'cockpit_join_failed' });
           socket.emit('device_list', []);
@@ -4194,17 +4196,48 @@ io.on('connection', (socket) => {
           });
         }
 
-      } else {
-        socket.emit('room_joined', { roomId: null, reason: 'target_not_paired_yet' });
-        dlog('[COCKPIT] no room yet (target not paired)', { cockpitForXrId: XR, socketId: socket.id });
-
-        // Not paired yet (or XR device not online). Return empty list so UI can show "No devices online"
-        socket.emit('device_list', []);
-        dlog('[COCKPIT] primary not paired/online yet', { xrId: XR, socketId: socket.id });
+        return; // IMPORTANT
       }
 
-      return; // IMPORTANT: cockpit must not run XR device identify logic below
+      // ✅ CASE 2: Primary exists but not paired yet → SHOW SINGLE DEVICE (self-only)
+      if (primaryFinal) {
+
+        socket.data.roomId = null;
+        socket.emit('room_joined', { roomId: null, reason: 'target_not_paired_yet' });
+
+        try {
+          const b = batteryByDevice?.get(XR) || {};
+          const t = telemetryByDevice?.get(XR) || null;
+
+          socket.emit('device_list', [{
+            xrId: XR,
+            deviceName: primaryFinal.data?.deviceName || 'Unknown',
+            battery: (typeof b.pct === 'number') ? b.pct : null,
+            charging: !!b.charging,
+            batteryTs: b.ts || null,
+            ...(t ? { telemetry: t } : {}),
+          }]);
+
+          dlog('[COCKPIT][IDENTIFY] primary online but not paired → sent self-only device_list', {
+            socketId: socket.id, cockpitForXrId: XR
+          });
+        } catch (e) {
+          socket.emit('device_list', []);
+          dwarn('[COCKPIT][IDENTIFY] self-only list failed', { err: e?.message || e });
+        }
+
+        return; // IMPORTANT
+      }
+
+      // ✅ CASE 3: Primary not online yet → empty list (no devices)
+      socket.data.roomId = null;
+      socket.emit('room_joined', { roomId: null, reason: 'primary_not_online_yet' });
+      socket.emit('device_list', []);
+      dlog('[COCKPIT] primary not online yet → empty list', { xrId: XR, socketId: socket.id });
+
+      return; // IMPORTANT
     }
+
 
 
     // 🔒 Duplicate xrId handling (NEWEST WINS): if an old socket exists, kick it and accept this one.
@@ -4349,28 +4382,34 @@ io.on('connection', (socket) => {
       const roomId = socket.data?.roomId;
 
       // ✅ Cockpit is VIEW-ONLY. If not in room yet, try to join the target XR's pair room.
+      // ALSO: if target XR is online but unpaired, show self-only device_list (fixes cold-start).
       if (socket.data?.clientType === 'cockpit' && !roomId) {
         const target = normXr(socket.data?.cockpitForXrId);
         dlog('[COCKPIT][REQ_LIST] no room yet, attempting join', { socketId: socket.id, target });
 
         if (target) {
+          // cluster lookup (may miss briefly)
           const primary = await getClientSocketByXrIdCI_Cluster(target, socket);
+          // ✅ local fallback (matches identify fix)
+          const primaryLocal = clients?.get?.(target) || null;
+          const primaryFinal = primary || primaryLocal;
 
-          const targetRoom = primary?.data?.roomId || null;
+          const targetRoom = primaryFinal?.data?.roomId || null;
 
-          dlog('[COCKPIT][REQ_LIST] primary lookup', {
+          dlog('[COCKPIT][REQ_LIST] primary lookup (cluster+local)', {
             socketId: socket.id,
             target,
-            primarySocketId: primary?.id || null,
-            targetRoom
+            primarySocketId: primaryFinal?.id || null,
+            targetRoom,
+            usedLocalFallback: !!(!primary && primaryLocal)
           });
 
+          // ✅ CASE 1: target is paired → join room and mirror room device_list
           if (targetRoom) {
             try {
               await socket.join(targetRoom);
               socket.data.roomId = targetRoom;
               socket.emit('room_joined', { roomId: targetRoom });
-
 
               const list = await buildDeviceListForRoom(targetRoom);
               socket.emit('device_list', Array.isArray(list) ? list : []);
@@ -4378,16 +4417,46 @@ io.on('connection', (socket) => {
               return;
             } catch (e) {
               dwarn('[COCKPIT][REQ_LIST] join failed', { err: e?.message || e, targetRoom });
+              // fall through to self-only / empty below
             }
+          }
+
+          // ✅ CASE 2: target is online but NOT paired → show single device (self-only)
+          if (primaryFinal) {
+            socket.data.roomId = null;
+            socket.emit('room_joined', { roomId: null, reason: 'target_not_paired_yet' });
+
+            try {
+              const b = batteryByDevice?.get(target) || {};
+              const t = telemetryByDevice?.get(target) || null;
+
+              socket.emit('device_list', [{
+                xrId: target,
+                deviceName: primaryFinal.data?.deviceName || 'Unknown',
+                battery: (typeof b.pct === 'number') ? b.pct : null,
+                charging: !!b.charging,
+                batteryTs: b.ts || null,
+                ...(t ? { telemetry: t } : {}),
+              }]);
+
+              dlog('[COCKPIT][REQ_LIST] target online but not paired → sent self-only device_list', {
+                socketId: socket.id, target
+              });
+            } catch (e) {
+              socket.emit('device_list', []);
+              dwarn('[COCKPIT][REQ_LIST] self-only list failed', { err: e?.message || e });
+            }
+            return;
           }
         }
 
-        // If still not paired, always respond (prevents stale UI)
-        socket.emit('room_joined', { roomId: null, reason: 'cockpit_not_paired_yet' });
+        // ✅ CASE 3: target not online yet → empty list (prevents stale UI)
+        socket.emit('room_joined', { roomId: null, reason: 'primary_not_online_yet' });
         socket.emit('device_list', []);
-        dlog('[COCKPIT][REQ_LIST] still not paired; sent empty list', { socketId: socket.id, target });
+        dlog('[COCKPIT][REQ_LIST] target offline; sent empty list', { socketId: socket.id, target });
         return;
       }
+
 
 
       // ✅ If paired → ONLY devices in this pair room

@@ -1,4 +1,4 @@
-// -------------------------------------------------- scribe-cockpit.js ----------------------------------------------------
+// -------------------------------------------------- scribe-cockpit.js --------------------------------------------------
 // Scribe cockpit with precise, persistent per-textbox edit tracking vs AI baseline,
 // and device-based status pill logic.
 //
@@ -1368,6 +1368,23 @@ function connectTo(endpointBase, onFailover) {
     try { socket?.close(); } catch { }
     socket = window.io(SERVER_URL, opts);
 
+
+    socket.off('connect_error');
+    socket.off('disconnect');
+
+    socket.on('connect_error', err => console.warn('[SCRIBE] connect_error:', err));
+    socket.on('disconnect', (reason) => {
+      console.warn('[COCKPIT] disconnect', { reason, socketId: socket?.id, currentRoom });
+
+      const prevRoom = currentRoom;
+      currentRoom = null;
+
+      _lastReqListAt = 0;   // keep your existing throttle reset
+      clearCockpitUiForRoomSwitch(prevRoom, null);
+      showNoDevices();
+      updateConnectionStatus('disconnect');
+    });
+
     let connected = false;
     const failTimer = setTimeout(() => { if (!connected) onFailover?.(); }, 4000);
 
@@ -1379,9 +1396,84 @@ function connectTo(endpointBase, onFailover) {
       socket.off('device_list', updateDeviceList);
       socket.off('signal', handleSignalMessage);
       socket.off('room_joined');
+      socket.off('peer_left');
+      socket.off('room_update');   // ✅ ADD THIS
+      socket.off('telemetry_update');
+
 
       socket.on('device_list', updateDeviceList); // renders list only (status is socket+room based)
       socket.on('signal', handleSignalMessage);
+
+      socket.on('room_update', ({ pairs } = {}) => {
+        try {
+          if (!COCKPIT_FOR_XR_ID) return;
+
+          const me = String(COCKPIT_FOR_XR_ID).trim().toUpperCase();
+          const list = Array.isArray(pairs) ? pairs : [];
+
+          const inAnyPair = list.some(p => {
+            const a = String(p?.a || '').trim().toUpperCase();
+            const b = String(p?.b || '').trim().toUpperCase();
+            return a === me || b === me;
+          });
+
+          // ✅ When pairing appears, ask server for fresh device_list (throttled)
+          // Only do this if we are not already in a room (prevents spam)
+          if (inAnyPair && !currentRoom) {
+            console.log('[COCKPIT][ROOM_UPDATE] pair detected for me; requesting device_list', { me, currentRoom });
+            requestDeviceListThrottled('room_update_pair_detected');
+          }
+        } catch (e) {
+          console.warn('[COCKPIT][ROOM_UPDATE] handler error', e);
+        }
+      });
+
+      socket.on('telemetry_update', (t = {}) => {
+        try {
+          // If we are not paired yet, the server might still be sending telemetry for the “primary”
+          // Use this as the bootstrap to show single-device-online without waiting for room_update.
+          if (!COCKPIT_FOR_XR_ID) return;
+
+          const me = String(COCKPIT_FOR_XR_ID).trim().toUpperCase();
+          const xr = String(t?.xrId || '').trim().toUpperCase();
+          if (!xr) return;
+
+          // Only act when telemetry belongs to the primary XR we’re “watching”
+          if (xr !== me) return;
+
+          // If we're not in a room yet, ask server for authoritative list (throttled).
+          // Server may reply [] or [me]; either way, this triggers UI refresh logic.
+          if (!currentRoom) {
+            requestDeviceListThrottled('telemetry_bootstrap_single_device');
+          }
+        } catch (e) {
+          console.warn('[COCKPIT][TELEMETRY_UPDATE] handler error', e);
+        }
+      });
+
+
+      socket.on('peer_left', ({ xrId, roomId, reason } = {}) => {
+        // Ignore peer_left for some other room (extra safety)
+        if (roomId && currentRoom && roomId !== currentRoom) return;
+
+        const prevRoom = currentRoom;
+        currentRoom = null;
+
+        console.warn('[COCKPIT] peer_left', { xrId, roomId, reason, prevRoom });
+
+        // Clear room-isolated UI (transcript/SOAP) because pairing ended
+        clearCockpitUiForRoomSwitch(prevRoom, null);
+
+        // Clear device list immediately (don’t wait for next device_list)
+        showNoDevices();
+
+        // Status pill: socket may still be connected, but room is gone => Connecting
+        updateConnectionStatus('peer_left');
+
+        // Ask server for authoritative list (will return self-only or [])
+        requestDeviceListThrottled('after_peer_left');
+      });
+
 
       // ✅ If/when server joins cockpit to pair room, re-request list to mirror XR Vision Dock
       socket.on('room_joined', ({ roomId, reason, members } = {}) => {
@@ -1455,14 +1547,7 @@ function connectTo(endpointBase, onFailover) {
       resolve();
     });
 
-    socket.on('connect_error', err => console.warn('[SCRIBE] connect_error:', err));
-    socket.on('disconnect', (reason) => {
-      console.warn('[COCKPIT] disconnect', { reason, socketId: socket?.id, currentRoom });
-      currentRoom = null;
-      _lastReqListAt = 0;   // ✅ reset throttle so next connect can request immediately
-      showNoDevices();
-      updateConnectionStatus('disconnect');
-    });
+
 
   });
 }
