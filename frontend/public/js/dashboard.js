@@ -256,6 +256,25 @@ async function loadMappedPairsFromDB() {
     }
 
     console.log('[DASHBOARD] Loaded mappings:', mappedPairs.length);
+
+    // ✅ NEW: if socket is already connected, subscribe now (covers race: socket connects before mappings load)
+    if (socket?.connected) {
+      try {
+        const rooms = mappedPairs
+          .map(p => {
+            const A = String(p.providerXrId || '').trim();
+            const B = String(p.scribeXrId || '').trim();
+            if (!A || !B) return null;
+            const [x, y] = [A, B].sort();
+            return `pair:${x}:${y}`;
+          })
+          .filter(Boolean);
+
+        socket.emit('dashboard_subscribe_pairs', { rooms: [...new Set(rooms)] });
+      } catch { }
+    }
+
+
   } catch (err) {
     console.warn('[DASHBOARD] Failed to load mappings:', err);
     mappedPairs = [];
@@ -306,8 +325,11 @@ function computeState(xrId) {
   // 🟢 green - both online
   if (online && partnerOnline) return 'available';
 
-  // 🟠 amber - one online, one offline
-  return 'connecting';
+  // 🟠 yellow ONLY for the device that is online and waiting for partner
+  if (online && !partnerOnline) return 'connecting';
+
+  // 🔴 if THIS device is offline (even if partner is online), keep it red
+  return 'busy';
 }
 
 
@@ -738,22 +760,86 @@ function initSocket() {
   });
 
 
+  function toPairRoomId(a, b) {
+    // must match server getRoomIdForPair() convention: pair:<sortedA>:<sortedB>
+    const A = String(a || '').trim();
+    const B = String(b || '').trim();
+    if (!A || !B) return null;
+    const [x, y] = [A, B].sort();
+    return `pair:${x}:${y}`;
+  }
+
+  function buildRoomsFromMappedPairs() {
+    // mappedPairs must already exist (your DB-driven mappings)
+    // Try multiple shapes safely
+    const rooms = [];
+    const arr = Array.isArray(window.mappedPairs) ? window.mappedPairs : (Array.isArray(mappedPairs) ? mappedPairs : []);
+
+    for (const m of arr) {
+      const a = String(m.providerXrId || m.leftXrId || m.a || m.xrLeft || m.xrA || '').trim();
+      const b = String(m.scribeXrId || m.rightXrId || m.b || m.xrRight || m.xrB || '').trim();
+
+      const roomId = toPairRoomId(a, b);
+      if (roomId) rooms.push(roomId);
+    }
+    // remove duplicates
+    return [...new Set(rooms)];
+  }
+
+  function subscribeDashboardToRooms() {
+    const rooms = buildRoomsFromMappedPairs();
+    if (!rooms.length) {
+      console.warn('[DASHBOARD] No mapped pairs yet; skipping subscribe for now.');
+      return;
+    }
+    socket.emit('dashboard_subscribe_pairs', { rooms });
+    console.log('[DASHBOARD] subscribed to rooms:', rooms.length);
+  }
+
   socket.on('connect', () => {
-    try { socket.emit('request_device_list'); } catch { }
+    try {
+      // ✅ identify as view-only dashboard
+      socket.emit('identify', { clientType: 'dashboard', deviceName: 'XR Hub Dashboard' });
+
+      // ✅ join all pair rooms so we receive room-scoped device_list/telemetry/battery/quality
+      subscribeDashboardToRooms();
+    } catch { }
   });
 
+
   socket.on('device_list', (list = []) => {
-    onlineDevices.clear();
-    for (const d of list) if (d?.xrId) onlineDevices.set(d.xrId, d);
+    // ✅ IMPORTANT: do NOT clear, because dashboard will get device_list from MANY rooms.
+    // Clearing would wipe previously received devices and keep rows red.
+    for (const d of list) {
+      const id = (d?.xrId || '').trim();
+      if (id) onlineDevices.set(id, d);
+    }
+
+
     gotInitialDevices = true;
-    renderIfReady(); // 🔸 first paint waits for pairs too
+    renderIfReady();
   });
+
+  socket.on('peer_left', ({ xrId } = {}) => {
+    const id = (xrId || '').trim();
+    if (id) {
+      onlineDevices.delete(id);
+      batteryState.delete(id);
+      telemetry.delete(id);
+    }
+
+    renderDevices();
+  });
+
+
 
   // Live battery updates (render immediately; post-first-paint this is fine)
   socket.on('battery_update', ({ xrId, pct, charging }) => {
-    batteryState.set(xrId, { pct, charging: !!charging });
+    const id = (xrId || '').trim();
+    if (id) batteryState.set(id, { pct, charging: !!charging });
     renderDevices();
   });
+
 
   socket.on('room_update', ({ pairs = [] } = {}) => {
     activePairs.clear();
@@ -769,7 +855,7 @@ function initSocket() {
   // });
 
   socket.on('telemetry_update', (data = {}) => {
-    const deviceId = data.deviceId || data.xrId;     // supports both shapes
+    const deviceId = (data.deviceId || data.xrId || '').trim();// supports both shapes
     const sample = data.sample || data;          // supports both shapes
     if (deviceId) telemetry.set(deviceId, sample);
     renderDevices();
