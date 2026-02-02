@@ -805,7 +805,7 @@ function clearPairRetry(xrId) {
 }
 
 
-
+//------------changes made regarding dashabord ***----------------------------------------------------------------
 async function tryDbAutoPair(deviceId, debugSocket = null) {
   const meXr = normXr(deviceId);
   if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] start", { deviceId: meXr });
@@ -837,19 +837,32 @@ async function tryDbAutoPair(deviceId, debugSocket = null) {
     partnerXr
   });
 
-  if (!meSocket || !partnerSocket) {
-    if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] missing socket(s) — retry scheduled", {
-      meSocket: !!meSocket,
-      partnerSocket: !!partnerSocket,
-      partnerXr
-    });
-
-    // ✅ MANDATORY: pass debugSocket so retry logs show in browser console
+  // ✅ If *me* socket is missing, we cannot do anything
+  if (!meSocket) {
+    if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] missing meSocket — retry scheduled", { meXr, partnerXr });
     schedulePairRetry(meXr, debugSocket);
     return false;
   }
 
-  if (isAlreadyPaired(deviceId) || isAlreadyPaired(partnerXr)) {
+  // ✅ If partner missing: join ME solo so dashboard can show YELLOW/RED with no refresh
+  if (!partnerSocket) {
+    const roomId = getRoomIdForPair(deviceId, partnerXr);
+    if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] partner missing — join me only + broadcast", { meXr, partnerXr, roomId });
+
+    try { await meSocket.join(roomId); } catch { }
+    try { meSocket.data.roomId = roomId; } catch { }
+
+    // do NOT set pairedWith yet (partner not online)
+    // ✅ DO NOT emit room_joined when partner is offline (prevents Dock “VR Room created…” spam)
+
+    try { await broadcastDeviceList(roomId); } catch { }
+
+    schedulePairRetry(meXr, debugSocket);
+    return false;
+  }
+
+
+  if (isAlreadyPaired(meXr) || isAlreadyPaired(partnerXr)) {
     if (debugSocket) dbgToSocket(debugSocket, "[DB_AUTO_PAIR] bail: one side already paired", { meXr, partnerXr });
     return false;
   }
@@ -936,6 +949,7 @@ async function buildDeviceListGlobal() {
   return list;
 }
 
+//------------changes made regarding dashabord ***----------------------------------------------------------------
 // ✅ Build device list strictly for a given room (pair isolation)
 // ✅ FIX: do NOT use fetchSockets() (it is timing out with your adapter)
 // Instead: parse the canonical room name "pair:XR-A:XR-B" and use online maps.
@@ -1131,6 +1145,54 @@ async function buildDeviceListForRoom(roomId) {
 
       const unique = Array.from(new Map(list.map(x => [x.xrId, x])).values()).slice(0, 2);
 
+      // ✅ CRITICAL FIX:///-------------------------------------------------------------------------till
+      // fetchSockets can return ONLY viewer sockets (dashboard/cockpit) in the room.
+      // In that case list/unique becomes empty even though sockets.length > 0.
+      // We must fall back to "roomId-derived IDs" BUT only include devices that are truly online.
+      if (unique.length === 0) {
+        dwarn(`[DEVICE_LIST][${stamp}][${inst}] fetchSockets had sockets but no xr devices; using ONLINE-only fallback`, { roomId });
+        dbgToRoom(roomId, "[DEVICE_LIST] sockets present but no xrId devices (ONLINE-only fallback)", { roomId, inst });
+
+        const parts = String(roomId).split(':');
+        const a = normXr(parts[1] || '');
+        const b = normXr(parts[2] || '');
+        const ids = [a, b].filter(Boolean).slice(0, 2);
+
+        const onlineIds = [];
+        for (const id of ids) {
+          // Prefer Redis owner-lock as authoritative online indicator in prod
+          const online = await isXrOnlineRedis(id);
+          if (online) onlineIds.push(id);
+        }
+
+        const fallbackList = onlineIds.map(id => {
+          const bRec = batteryByDevice?.get(id) || {};
+          const tRec = telemetryByDevice?.get(id) || null;
+          return {
+            xrId: id,
+            deviceName: 'Unknown',
+            battery: (typeof bRec.pct === 'number') ? bRec.pct : null,
+            charging: !!bRec.charging,
+            batteryTs: bRec.ts || null,
+            ...(tRec ? { telemetry: tRec } : {}),
+          };
+        });
+
+        dlog(`[DEVICE_LIST][${stamp}][${inst}] ✅ built (cluster viewer-only fallback)`, {
+          roomId,
+          xrIds: fallbackList.map(x => x.xrId),
+        });
+
+        dbgToRoom(roomId, "[DEVICE_LIST] built (cluster viewer-only fallback)", {
+          roomId,
+          xrIds: fallbackList.map(x => x.xrId),
+          inst
+        });
+
+        return fallbackList;
+      }
+
+
       dlog(`[DEVICE_LIST][${stamp}][${inst}] ✅ built (cluster)`, {
         roomId,
         xrIds: unique.map(x => x.xrId),
@@ -1228,6 +1290,7 @@ async function buildDeviceListForRoom(roomId) {
 
 const deviceListInFlight = new Map(); // roomId -> Promise
 
+//------------changes made regarding dashabord ***----------------------------------------------------------------
 // ✅ Broadcast device list: global OR room-scoped (Option B safe)
 async function broadcastDeviceList(roomId) {
   dlog('[DEVICE_LIST] broadcast start', roomId ? `(room: ${roomId})` : '(global)');
@@ -1247,7 +1310,7 @@ async function broadcastDeviceList(roomId) {
         const list = await buildDeviceListForRoom(roomId);
 
         const safeList = Array.isArray(list) ? list : [];
-        io.to(roomId).emit('device_list', safeList);
+        io.to(roomId).emit('device_list', { roomId, devices: safeList });
 
         dbgToRoom(roomId, "[DEVICE_LIST] broadcast done", {
           roomId,
@@ -4849,10 +4912,13 @@ io.on('connection', (socket) => {
     if (!xrId) return;
     socket.leave(`metrics:${xrId}`);
   });
-  socket.on('dashboard_subscribe_pairs', async ({ rooms }) => {
+
+
+//------------changes made regarding dashabord ***----------------------------------------------------------------
+  socket.on('dashboard_subscribe_pairs', async ({ roomIds } = {}) => {
     if (socket.data?.clientType !== 'dashboard') return;
 
-    const safeRooms = (Array.isArray(rooms) ? rooms : [])
+    const safeRooms = (Array.isArray(roomIds) ? roomIds : [])
       .filter(r => typeof r === 'string')
       .filter(r => r.startsWith('pair:') && r.split(':').length === 3)
       .slice(0, 500);
@@ -4865,14 +4931,15 @@ io.on('connection', (socket) => {
     for (const roomId of safeRooms) {
       try {
         const dl = await buildDeviceListForRoom(roomId);
-        socket.emit('device_list', Array.isArray(dl) ? dl : []);
+        socket.emit('device_list', { roomId, devices: (Array.isArray(dl) ? dl : []) });
       } catch {
-        socket.emit('device_list', []);
+        socket.emit('device_list', { roomId, devices: [] });
       }
     }
 
     dlog('[DASHBOARD] subscribed rooms', { socketId: socket.id, count: safeRooms.length });
   });
+
 
 
 
@@ -5465,7 +5532,7 @@ io.on('connection', (socket) => {
 
 
 
-
+//------------changes made regarding dashabord ***----------------------------------------------------------------
   socket.on('webrtc_quality', (q) => {
     dlog('[QUALITY] recv', q);
     try {
@@ -5505,7 +5572,18 @@ io.on('connection', (socket) => {
       // Option B: keep quality updates inside pair room in prod
       const roomId = socket.data?.roomId;
       if (roomId) {
-        io.to(roomId).emit('webrtc_quality_update', Array.from(qualityByDevice.values()));
+        const parts = String(roomId).split(':');   // "pair:XR-A:XR-B"
+        // ✅ SAFETY GUARD (mandatory)
+        if (parts.length !== 3 || parts[0] !== 'pair') return;
+        const a = parts[1];
+        const b = parts[2];
+
+        const roomQuality = [a, b]
+          .map(id => qualityByDevice.get(id))
+          .filter(Boolean);
+
+        io.to(roomId).emit('webrtc_quality_update', roomQuality);
+
       } else if (!IS_PROD) {
         io.emit('webrtc_quality_update', Array.from(qualityByDevice.values())); // dev only
       } else {
@@ -5562,7 +5640,7 @@ io.on('connection', (socket) => {
 
 
 
-
+//------------changes made regarding dashabord ***----------------------------------------------------------------
   socket.on('disconnect', async (reason) => {
     if (socket.data?.clientType === 'cockpit' || socket.data?.clientType === 'dashboard') return;
     dlog('❎ [EVENT] disconnect', {
@@ -5593,17 +5671,26 @@ io.on('connection', (socket) => {
         // ✅ Option B: release one-to-one lock (do this ONCE)
         const partner = clearPairByXrId(xrId);
 
-        // ✅ clear partner's roomId so routing doesn't get stuck on dead room
-        // ✅ clear partner's roomId so routing doesn't get stuck on dead room (cluster-safe)
+        // ✅ Keep partner in canonical pair room SOLO so dashboard stays correct (cluster-safe).
+        // DO NOT clear partnerSocket.data.roomId here.
         if (oldPartner) {
           const partnerSocket = await getClientSocketByXrIdCI_Cluster(oldPartner, socket);
           if (partnerSocket) {
-            try { partnerSocket.data.roomId = null; } catch { }
-            dlog('[disconnect] cleared partner roomId (cluster)', { xrId, oldPartner, partnerSocketId: partnerSocket.id });
+            if (roomIdAtDisconnect) {
+              try { partnerSocket.join(roomIdAtDisconnect); } catch { }
+              try { partnerSocket.data.roomId = roomIdAtDisconnect; } catch { }
+            }
+            dlog('[disconnect] kept partner in room (cluster)', {
+              xrId,
+              oldPartner,
+              roomIdAtDisconnect,
+              partnerSocketId: partnerSocket.id
+            });
           } else {
-            dlog('[disconnect] partner socket not found (cluster) to clear roomId', { xrId, oldPartner });
+            dlog('[disconnect] partner socket not found (cluster) to keep in room', { xrId, oldPartner });
           }
         }
+
 
 
         if (partner) {

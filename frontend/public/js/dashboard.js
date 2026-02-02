@@ -149,6 +149,8 @@ const activePairs = new Set(); // "XR-1234|XR-1238"
 const batteryState = new Map();
 // NEW: telemetry store
 const telemetry = new Map(); // xrId -> latest telemetry record
+// NEW: roomId -> Set<xrId> last seen in that room (prevents stuck amber)
+const roomMembers = new Map();
 
 // ---- Streaming state (UI-only) ----
 const lastQuality = new Map();  // xrId -> { ts, bitrateKbps }
@@ -168,7 +170,10 @@ function updateConnBorder() {
   if (!box) return;
 
   // We key the green ring off the DOCK (XR_RIGHT) by default
-  const streaming = isStreaming(XR_DOCK || PRIMARY_RIGHT || 'XR-1238');
+  const streaming =
+    isStreaming(XR_ANDROID || PRIMARY_LEFT || 'XR-1234') ||
+    isStreaming(XR_DOCK || PRIMARY_RIGHT || 'XR-1238');
+
 
 
   // If you use Tailwind rings:
@@ -179,6 +184,21 @@ function updateConnBorder() {
   // If you don't use Tailwind, use a CSS class instead:
   // box.classList.toggle('conn--streaming', streaming);
 }
+
+function updateAllConnBorders() {
+  const boxes = document.querySelectorAll('.conn-box[data-left][data-right]');
+  for (const box of boxes) {
+    const leftId = (box.getAttribute('data-left') || '').trim();
+    const rightId = (box.getAttribute('data-right') || '').trim();
+
+    const streaming = isStreaming(leftId) || isStreaming(rightId);
+
+    box.classList.toggle('ring-2', streaming);
+    box.classList.toggle('ring-green-500', streaming);
+    box.classList.toggle('ring-offset-0', streaming);
+  }
+}
+
 
 // ===== Live date/time stamp (top-right above "Scribe") =====
 function ordinal(n) {
@@ -214,6 +234,17 @@ function renderIfReady() {
   renderDevices();
 }
 
+// ===== mappings cache (prevents "empty dashboard on refresh" when session/API 403) =====
+const MAPPINGS_CACHE_KEY = 'xrhub:mappings_cache_v1';
+
+function saveMappingsCache(rows) {
+  try { localStorage.setItem(MAPPINGS_CACHE_KEY, JSON.stringify(rows || [])); } catch { }
+}
+function loadMappingsCache() {
+  try { return JSON.parse(localStorage.getItem(MAPPINGS_CACHE_KEY) || '[]'); } catch { return []; }
+}
+
+
 // ===== DB mappings loader (Dashboard rows must exist even when offline) =====
 async function loadMappedPairsFromDB() {
   try {
@@ -225,13 +256,48 @@ async function loadMappedPairsFromDB() {
 
     if (!res.ok) {
       console.warn('[DASHBOARD] mapping API failed:', res.status);
-      mappedPairs = [];
-      mappedPartner.clear();
+
+      // ✅ beginner-safe: DO NOT wipe UI. Use last good cached mappings.
+      const cached = loadMappingsCache();
+      if (Array.isArray(cached) && cached.length) {
+        const rows = cached;
+
+        mappedPairs = rows
+          .map(m => ({
+            providerXrId: m.provider_xr_id || m?.provider?.xrId || null,
+            scribeXrId: m.scribe_xr_id || m?.scribe?.xrId || null,
+            providerName: m?.provider?.name || null,
+            scribeName: m?.scribe?.name || null,
+          }))
+          .filter(p => !!p.providerXrId && !!p.scribeXrId);
+
+        mappedPartner.clear();
+        for (const p of mappedPairs) {
+          mappedPartner.set(p.providerXrId, p.scribeXrId);
+          mappedPartner.set(p.scribeXrId, p.providerXrId);
+        }
+
+        if (mappedPairs.length) {
+          PRIMARY_LEFT = mappedPairs[0].providerXrId;
+          PRIMARY_RIGHT = mappedPairs[0].scribeXrId;
+          XR_ANDROID = PRIMARY_LEFT;
+          XR_DOCK = PRIMARY_RIGHT;
+        }
+
+        console.warn('[DASHBOARD] Using cached mappings:', mappedPairs.length);
+        return;
+      }
+
+      // If no cache exists, keep current in-memory mappings (do NOT clear)
+      console.warn('[DASHBOARD] No cache found; leaving mappedPairs as-is');
       return;
     }
 
+
     const data = await res.json();
     const rows = Array.isArray(data?.mappings) ? data.mappings : [];
+    saveMappingsCache(rows); // ✅ persist last good DB mappings
+
 
     mappedPairs = rows
       .map(m => ({
@@ -265,20 +331,52 @@ async function loadMappedPairsFromDB() {
             const A = String(p.providerXrId || '').trim();
             const B = String(p.scribeXrId || '').trim();
             if (!A || !B) return null;
-            const [x, y] = [A, B].sort();
+            const [x, y] = [A, B].sort((m, n) => m.localeCompare(n, undefined, { sensitivity: 'base' }));
             return `pair:${x}:${y}`;
           })
           .filter(Boolean);
 
-        socket.emit('dashboard_subscribe_pairs', { rooms: [...new Set(rooms)] });
+        socket.emit('dashboard_subscribe_pairs', { roomIds: [...new Set(rooms)] });
       } catch { }
     }
 
 
   } catch (err) {
     console.warn('[DASHBOARD] Failed to load mappings:', err);
-    mappedPairs = [];
-    mappedPartner.clear();
+
+    // ✅ DO NOT wipe: fallback to cache
+    const cached = loadMappingsCache();
+    if (Array.isArray(cached) && cached.length) {
+      const rows = cached;
+
+      mappedPairs = rows
+        .map(m => ({
+          providerXrId: m.provider_xr_id || m?.provider?.xrId || null,
+          scribeXrId: m.scribe_xr_id || m?.scribe?.xrId || null,
+          providerName: m?.provider?.name || null,
+          scribeName: m?.scribe?.name || null,
+        }))
+        .filter(p => !!p.providerXrId && !!p.scribeXrId);
+
+      mappedPartner.clear();
+      for (const p of mappedPairs) {
+        mappedPartner.set(p.providerXrId, p.scribeXrId);
+        mappedPartner.set(p.scribeXrId, p.providerXrId);
+      }
+
+      if (mappedPairs.length) {
+        PRIMARY_LEFT = mappedPairs[0].providerXrId;
+        PRIMARY_RIGHT = mappedPairs[0].scribeXrId;
+        XR_ANDROID = PRIMARY_LEFT;
+        XR_DOCK = PRIMARY_RIGHT;
+      }
+
+      console.warn('[DASHBOARD] Using cached mappings after exception:', mappedPairs.length);
+      return;
+    }
+
+    // If no cache exists, keep current in-memory mappings (do NOT clear)
+    console.warn('[DASHBOARD] No cache found; leaving mappedPairs as-is');
   }
 }
 
@@ -335,20 +433,45 @@ function computeState(xrId) {
 
 // ---- Cache last connection metrics so the box never goes blank ----
 function paintConnMetricsFromCache() {
-  const dockId = XR_DOCK || PRIMARY_RIGHT || 'XR-1238';
-  const q = lastQuality.get(dockId);
-  if (!q) return;
+  const boxes = document.querySelectorAll('.conn-box[data-left][data-right]');
 
-  const setNumber = (id, val, suffix = '') => {
-    if (!Number.isFinite(val)) return; // do NOT overwrite with blanks
-    const el = document.getElementById(id);
-    if (el) el.textContent = `${val.toFixed(1)}${suffix}`;
+  const fmt = (v, suffix) => {
+    if (!Number.isFinite(v)) return '—';
+    return `${Number(v).toFixed(1)}${suffix}`;
   };
 
-  setNumber('metricJitter', q.jitterMs, ' ms');
-  setNumber('metricLoss', q.lossPct, ' %');
-  setNumber('metricRtt', q.rttMs, ' ms');
+  boxes.forEach(box => {
+    const leftId = (box.dataset.left || '').trim();
+    const rightId = (box.dataset.right || '').trim();
+    if (!leftId || !rightId) return;
+
+    const L = lastQuality.get(leftId);
+    const R = lastQuality.get(rightId);
+
+    // LEFT side (Android)
+    if (L) {
+      const jl = box.querySelector('.metricJitterLeft');
+      const ll = box.querySelector('.metricLossLeft');
+      const rl = box.querySelector('.metricRttLeft');
+
+      if (jl) jl.textContent = fmt(L.jitterMs, ' ms');
+      if (ll) ll.textContent = fmt(L.lossPct, ' %');
+      if (rl) rl.textContent = fmt(L.rttMs, ' ms');
+    }
+
+    // RIGHT side (Dock)
+    if (R) {
+      const jr = box.querySelector('.metricJitterRight');
+      const lr = box.querySelector('.metricLossRight');
+      const rr = box.querySelector('.metricRttRight');
+
+      if (jr) jr.textContent = fmt(R.jitterMs, ' ms');
+      if (lr) lr.textContent = fmt(R.lossPct, ' %');
+      if (rr) rr.textContent = fmt(R.rttMs, ' ms');
+    }
+  });
 }
+
 
 // ------- Telemetry helpers (NEW) -------
 function barsGlyph(n) {
@@ -572,6 +695,43 @@ function paintCenterBox() {
   }
 }
 
+function paintAllCenterBoxes() {
+  const boxes = document.querySelectorAll('.conn-box[data-left][data-right]');
+
+  boxes.forEach(box => {
+    const leftId = (box.dataset.left || '').trim();
+    const rightId = (box.dataset.right || '').trim();
+    if (!leftId || !rightId) return;
+
+    const a = latest(leftId);
+    const d = latest(rightId);
+
+    const setText = (selector, val, suffix) => {
+      const el = box.querySelector(selector);
+      if (!el) return;
+      if (val === null || val === undefined || Number.isNaN(val)) {
+        el.textContent = '—';
+        return;
+      }
+      el.textContent = `${Number(val).toFixed(1)}${suffix}`;
+    };
+
+    // Android (left side of this row)
+    if (a) {
+      setText('.metricJitterLeft', a.jitter, ' ms');
+      setText('.metricLossLeft', a.loss, ' %');
+      setText('.metricRttLeft', a.rtt, ' ms');
+    }
+
+    // Dock (right side of this row)
+    if (d) {
+      setText('.metricJitterRight', d.jitter, ' ms');
+      setText('.metricLossRight', d.loss, ' %');
+      setText('.metricRttRight', d.rtt, ' ms');
+    }
+  });
+}
+
 
 
 
@@ -634,6 +794,7 @@ function buildRows() {
 }
 
 
+
 // Render
 function rowHTML({ label, left, scribe, right }) {
   const leftId = left.xrId;
@@ -641,7 +802,6 @@ function rowHTML({ label, left, scribe, right }) {
 
   const leftChip = `<button class="device-chip" data-xr="${leftId}">${chip(left.text, left.state)}</button>`;
   const rightChip = `<button class="device-chip" data-xr="${rightId}">${chip(right.text, right.state)}</button>`;
-
 
   return `
   <div class="grid grid-cols-12 gap-3 md:gap-4 items-center">
@@ -659,48 +819,58 @@ function rowHTML({ label, left, scribe, right }) {
       </div>
       ${renderNetBadges(leftId)}
       ${renderSysPills(leftId)}  <!-- NEW: Android-only RAM/TEMP pills -->
-
-
-      
     </div>
-
 
     <!-- Center: Connection Quality (Android left | Dock right) -->
-<div class="col-span-12 md:col-span-2">
-  <div id="conn-box" class="rounded-xl bg-white/5 border border-white/10 p-3 md:p-3.5 ring-0">
-    
-    <div class="grid grid-cols-2 gap-3">
-      <!-- ANDROID (left) -->
-      <div class="pr-2 border-r border-white/20">
-        <div class="grid grid-cols-3 gap-2 text-sm text-white/90 text-left">
-          <div><div class="text-[10px] text-white/60">J</div><div id="metricJitterLeft">—</div></div>
-          <div><div class="text-[10px] text-white/60">L</div><div id="metricLossLeft">—</div></div>
-          <div><div class="text-[10px] text-white/60">R</div><div id="metricRttLeft">—</div></div>
-        </div>
-      </div>
+    <div class="col-span-12 md:col-span-2">
+      <div class="conn-box rounded-xl bg-white/5 border border-white/10 p-3 md:p-3.5 ring-0"
+           data-left="${leftId}" data-right="${rightId}">
 
-      <!-- DOCK (right) -->
-      <div class="pl-2">
-        <div class="grid grid-cols-3 gap-2 text-sm text-white/90 text-right">
-          <div><div class="text-[10px] text-white/60">J</div><div id="metricJitterRight">—</div></div>
-          <div><div class="text-[10px] text-white/60">L</div><div id="metricLossRight">—</div></div>
-          <div><div class="text-[10px] text-white/60">R</div><div id="metricRttRight">—</div></div>
+        <div class="grid grid-cols-2 gap-3">
+          <!-- ANDROID (left) -->
+          <div class="pr-2 border-r border-white/20">
+            <div class="grid grid-cols-3 gap-2 text-sm text-white/90 text-left">
+              <div>
+                <div class="text-[10px] text-white/60">J</div>
+                <div class="metricJitterLeft">—</div>
+              </div>
+              <div>
+                <div class="text-[10px] text-white/60">L</div>
+                <div class="metricLossLeft">—</div>
+              </div>
+              <div>
+                <div class="text-[10px] text-white/60">R</div>
+                <div class="metricRttLeft">—</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- DOCK (right) -->
+          <div class="pl-2">
+            <div class="grid grid-cols-3 gap-2 text-sm text-white/90 text-right">
+              <div>
+                <div class="text-[10px] text-white/60">J</div>
+                <div class="metricJitterRight">—</div>
+              </div>
+              <div>
+                <div class="text-[10px] text-white/60">L</div>
+                <div class="metricLossRight">—</div>
+              </div>
+              <div>
+                <div class="text-[10px] text-white/60">R</div>
+                <div class="metricRttRight">—</div>
+              </div>
+            </div>
+          </div>
         </div>
+
       </div>
     </div>
-  </div>
-</div>
-
-
-
-
-
-    
 
     <!-- RIGHT: Dock card -->
     <div class="col-span-12 md:col-span-4 flex flex-col items-end">
       <div class="flex items-center justify-end gap-3">
-        <div class="text-white/90 text-base md:text-lg mr-20 pr-2">${scribe}</div><!-- ✅ matched size --> 
+        <div class="text-white/90 text-base md:text-lg mr-20 pr-2">${scribe}</div><!-- ✅ matched size -->
         ${rightChip}
         <div class="flex gap-2">
           <button class="icon-btn hub-edit-btn" title="Edit">${Icon.pen}</button>
@@ -709,14 +879,11 @@ function rowHTML({ label, left, scribe, right }) {
         </div>
       </div>
       ${renderNetBadges(rightId)}
-
-      
-
-      
     </div>
   </div>
   <div class="border-b divider"></div>`;
 }
+
 
 
 function renderDevices() {
@@ -729,6 +896,7 @@ function renderDevices() {
   updateConnBorder();
   renderConnectionTiles();   // 🔸 add this line
   paintCenterBox();        // ← keep this
+  paintAllCenterBoxes();     // ✅ NEW: updates metrics for EVERY row
 
 
   // After first successful render, stop gating future renders
@@ -761,13 +929,17 @@ function initSocket() {
 
 
   function toPairRoomId(a, b) {
-    // must match server getRoomIdForPair() convention: pair:<sortedA>:<sortedB>
     const A = String(a || '').trim();
     const B = String(b || '').trim();
     if (!A || !B) return null;
-    const [x, y] = [A, B].sort();
+
+    const [x, y] = [A, B].sort((m, n) =>
+      m.localeCompare(n, undefined, { sensitivity: 'base' })
+    );
+
     return `pair:${x}:${y}`;
   }
+
 
   function buildRoomsFromMappedPairs() {
     // mappedPairs must already exist (your DB-driven mappings)
@@ -792,7 +964,7 @@ function initSocket() {
       console.warn('[DASHBOARD] No mapped pairs yet; skipping subscribe for now.');
       return;
     }
-    socket.emit('dashboard_subscribe_pairs', { rooms });
+    socket.emit('dashboard_subscribe_pairs', { roomIds: rooms });
     console.log('[DASHBOARD] subscribed to rooms:', rooms.length);
   }
 
@@ -807,18 +979,49 @@ function initSocket() {
   });
 
 
-  socket.on('device_list', (list = []) => {
-    // ✅ IMPORTANT: do NOT clear, because dashboard will get device_list from MANY rooms.
-    // Clearing would wipe previously received devices and keep rows red.
+  socket.on('device_list', (payload = []) => {
+    // Support BOTH shapes:
+    // 1) legacy: payload = [{xrId,...}, ...]
+    // 2) new: payload = { roomId, devices: [{xrId,...}, ...] }
+
+    const isLegacy = Array.isArray(payload);
+    const roomId = isLegacy ? null : (typeof payload?.roomId === 'string' ? payload.roomId : null);
+
+    const list = isLegacy
+      ? payload
+      : (Array.isArray(payload?.devices) ? payload.devices : []);
+
+    // Build next membership for THIS room
+    const nextIds = new Set();
     for (const d of list) {
       const id = (d?.xrId || '').trim();
-      if (id) onlineDevices.set(id, d);
+      if (!id) continue;
+      nextIds.add(id);
+      onlineDevices.set(id, d); // latest snapshot
     }
 
+    // ✅ CRITICAL: remove devices that disappeared from THIS room
+    if (roomId) {
+      const prev = roomMembers.get(roomId) || new Set();
+
+      for (const oldId of prev) {
+        if (!nextIds.has(oldId)) {
+          onlineDevices.delete(oldId);
+          batteryState.delete(oldId);
+          telemetry.delete(oldId);
+          lastQuality.delete(oldId);
+        }
+      }
+
+      roomMembers.set(roomId, nextIds);
+    }
 
     gotInitialDevices = true;
     renderIfReady();
   });
+
+
+
 
   socket.on('peer_left', ({ xrId } = {}) => {
     const id = (xrId || '').trim();
@@ -912,28 +1115,29 @@ function initSocket() {
 
     // 2) Update tiles for BOTH devices
     renderConnectionTiles();
-    paintCenterBox();        // ← keep this
+    // paintCenterBox();        // ← keep this
+    paintAllCenterBoxes();   // ✅ mandatory: updates every row by data-left/data-right
 
-    // 3) Keep your center Dock box (metricJitter/Loss/RTT) using your existing cache logic
-    //    Choose the *latest sample* for Dock and store in lastQuality
-    const dockId = XR_DOCK || PRIMARY_RIGHT || 'XR-1238';
+    // 3) Update lastQuality cache for EVERY device in this payload
+    //    (so each row can paint from cache even between updates)
+    for (const s of items) {
+      const xrId = (s.xrId || '').trim();
+      if (!xrId) continue;
 
-    // pick the freshest item for this dock id
-    const freshestDock = items
-      .filter(s => s.xrId === dockId)
-      .sort((a, b) => (b.ts || 0) - (a.ts || 0))[0];
-
-    if (freshestDock) {
-      lastQuality.set(dockId, {
-        ts: Date.now(),
-        bitrateKbps: Number.isFinite(freshestDock.bitrateKbps) ? freshestDock.bitrateKbps : 0,
-        jitterMs: Number.isFinite(freshestDock.jitterMs) ? freshestDock.jitterMs : lastQuality.get(dockId)?.jitterMs ?? null,
-        lossPct: Number.isFinite(freshestDock.lossPct) ? freshestDock.lossPct : lastQuality.get(dockId)?.lossPct ?? null,
-        rttMs: Number.isFinite(freshestDock.rttMs) ? freshestDock.rttMs : lastQuality.get(dockId)?.rttMs ?? null,
+      const prev = lastQuality.get(xrId) || {};
+      lastQuality.set(xrId, {
+        ts: s.ts ?? Date.now(),
+        bitrateKbps: Number.isFinite(s.bitrateKbps) ? s.bitrateKbps : (prev.bitrateKbps ?? null),
+        jitterMs: Number.isFinite(s.jitterMs) ? s.jitterMs : (prev.jitterMs ?? null),
+        lossPct: Number.isFinite(s.lossPct) ? s.lossPct : (prev.lossPct ?? null),
+        rttMs: Number.isFinite(s.rttMs) ? s.rttMs : (prev.rttMs ?? null),
       });
-      paintConnMetricsFromCache();
-      updateConnBorder();
     }
+
+    // Paint cached metrics into EVERY row's conn-box + keep border logic
+    paintAllCenterBoxes();
+    updateAllConnBorders();
+
 
     // 4) If the detail modal is open for a specific device, push these points to charts
     if (window.__metricsXrId) {
@@ -1118,13 +1322,15 @@ function initSocket() {
 document.addEventListener('DOMContentLoaded', async () => {
   // 1) Load XR Hub permissions & lock UI if user is READ-only
   await loadHubPermissions();
-  applyHubReadOnlyUI();
+
 
   // 2) Load DB mappings so rows exist even when offline (Platform parity)
   await loadMappedPairsFromDB();
 
   // ✅ Render immediately (offline rows will show RED)
   renderDevices();
+
+  applyHubReadOnlyUI();
 
   // 3) Now wire sockets + live telemetry (will flip colors as devices connect)
   initSocket();
