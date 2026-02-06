@@ -640,7 +640,9 @@
       stopSoapGenerationTimer();
       renderSoapBlank();
       if (dom.templateSelect) setTemplateSelectValue('default');
-      updateDeviceList([]); // keeps status coherent in empty-state
+      // NOTE: Do NOT clear device list here. Device connectivity is independent of transcript history.
+      // updateDeviceList([]);
+
       return;
     }
 
@@ -1727,13 +1729,27 @@
     if (!packet?.type) return;
 
     const msgRoom = getPacketRoomId(packet);
-    // Strict room isolation:
-    // - If we are in a room, we ONLY accept packets that explicitly carry that room id.
-    // - If we are not in a room yet, we ignore room-scoped packets.
-    if (msgRoom && !state.currentRoom) return;
-    if (state.currentRoom) {
-      if (!msgRoom) return;
-      if (msgRoom !== state.currentRoom) return;
+
+    // Room filtering (best-effort without breaking existing workflow):
+    // Some server deployments do NOT attach roomId on `signal` payloads (especially transcript/soap events).
+    // If we hard-require msgRoom, the cockpit will silently drop transcripts/soap => "transcription not shown".
+    //
+    // Policy:
+    // 1) If msgRoom is present => enforce strict match.
+    // 2) If msgRoom is missing:
+    //    - Allow transcript_console / soap_note_console ONLY when we are currently in a room.
+    //    - Drop other packet types without msgRoom (keeps isolation for other signals).
+    if (msgRoom) {
+      if (state.currentRoom && msgRoom !== state.currentRoom) return;
+      // if we are not in a room yet, still allow (bootstrap) — server may be room-less early.
+    } else {
+      const t = String(packet.type || '');
+      const roomLessAllowed = t === 'transcript_console' || t === 'soap_note_console' || t === 'drug_availability' || t === 'drug_availability_console';
+      if (!roomLessAllowed) return;
+      if (!state.currentRoom) {
+        // If we're not in a room yet, transcript/soap is likely not relevant to this cockpit session.
+        return;
+      }
     }
 
 
