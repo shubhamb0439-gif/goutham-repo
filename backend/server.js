@@ -912,9 +912,33 @@ function roomOf(xrId) {
   return `xr:${normXr(xrId)}`;
 }
 
-const messageHistory = [];
-dlog('[STATE] messageHistory initialized');
+// Message history MUST be isolated per pair room
+// Key = canonical roomId (pair:<XR-A>:<XR-B>) or solo:<XR-ID> if not paired yet
+const messageHistoryByRoom = new Map(); // Map<roomId, Array<Message>>
+const MAX_MESSAGES_PER_ROOM = 200;
 
+function roomForHistory(socket) {
+  // Option B: paired sockets have socket.data.roomId set
+  const roomId = socket?.data?.roomId;
+  if (roomId) return roomId;
+
+  // If not paired yet, keep history isolated per XR (never global)
+  const xrId = socket?.data?.xrId || 'unknown';
+  return `solo:${normXr(xrId)}`;
+}
+
+function appendMessage(roomId, msg) {
+  const arr = messageHistoryByRoom.get(roomId) || [];
+  arr.push(msg);
+  if (arr.length > MAX_MESSAGES_PER_ROOM) arr.splice(0, arr.length - MAX_MESSAGES_PER_ROOM);
+  messageHistoryByRoom.set(roomId, arr);
+}
+
+function getMessages(roomId) {
+  return messageHistoryByRoom.get(roomId) || [];
+}
+
+dlog('[STATE] messageHistoryByRoom initialized');
 
 
 
@@ -1360,13 +1384,22 @@ async function broadcastDeviceList(roomId) {
 
 
 
-function addToMessageHistory(message) {
-  messageHistory.push({ ...message, id: Date.now(), timestamp: new Date().toISOString() });
-  if (messageHistory.length > 100) {
-    messageHistory.shift();
-  }
-  dlog('[MSG_HISTORY] added; len=', messageHistory.length);
+function addToMessageHistory(socket, message) {
+  const roomId = roomForHistory(socket);
+
+  const msg = {
+    ...message,
+    id: Date.now(),
+    timestamp: new Date().toISOString(),
+    roomId, // tag for safety/debug
+  };
+
+  appendMessage(roomId, msg);
+
+  const len = getMessages(roomId).length;
+  dlog('[MSG_HISTORY] added; room=', roomId, 'len=', len);
 }
+
 
 // -------------------- Routes --------------------
 app.get('/health', async (_req, res) => {
@@ -3120,6 +3153,26 @@ app.get('/api/platform/scribe-provider-mapping', requireLogin, requireScreen(8),
       sessionUser.type === 'SuperAdmin';
     const isMasterAdminBit = isMasterAdmin ? 1 : 0;
 
+    // ✅ Global mapped provider IDs (used to compute "Unmapped Providers" correctly)
+    // Important: this is NOT scoped by manager, and it does not expose scribe details.
+    const mappedProviderRows = await sequelize.query(
+      `
+      SELECT DISTINCT provider_user_id
+      FROM [dbo].[Scribe_Provider_Mapping]
+      WHERE row_status = 1
+        AND provider_user_id IS NOT NULL
+      `,
+      { type: Sequelize.QueryTypes.SELECT }
+    );
+
+    const mappedProviderIdsAll = (mappedProviderRows || [])
+      .map(r => r.provider_user_id)
+      .filter(v => v != null)
+      .map(v => Number(v))
+      .filter(n => Number.isFinite(n))
+      .map(n => String(n)); // normalize to string for easy frontend Set usage
+
+
     const rows = await sequelize.query(
       `
       SELECT
@@ -3177,12 +3230,6 @@ app.get('/api/platform/scribe-provider-mapping', requireLogin, requireScreen(8),
     // Shape it nicely for the frontend (no behavior impact on other routes)
     const mappings = rows.map((r) => ({
       id: r.id,
-
-      // ✅ flat XR IDs for dashboard (non-breaking)
-      scribe_xr_id: r.scribe_xr_id,
-      provider_xr_id: r.provider_xr_id,
-
-      // existing structure (Platform continues to work)
       scribe: {
         id: r.scribe_id,
         name: r.scribe_name,
@@ -3195,13 +3242,15 @@ app.get('/api/platform/scribe-provider-mapping', requireLogin, requireScreen(8),
         name: r.provider_name,
         email: r.provider_email,
         xrId: r.provider_xr_id,
+        // ✅ add these
         clinic_id: r.provider_clinic_id,
         clinic_name: r.provider_clinic_name,
+
       },
     }));
 
+    return res.json({ ok: true, mappings, mappedProviderIdsAll });
 
-    return res.json({ ok: true, mappings });
   } catch (err) {
     console.error('[PLATFORM] /api/platform/scribe-provider-mapping (GET) error:', err);
     return res
@@ -4540,12 +4589,7 @@ io.on('connection', (socket) => {
   console.log(`🔌 [CONNECTION] ${socket.id}`);
   dlog('[CONNECTION] handshake.query:', safeDataPreview(socket.handshake?.query));
 
-  // Send recent message history
-  if (messageHistory.length > 0) {
-    const recent = messageHistory.slice(-10);
-    dlog('[CONNECTION] sending message_history size=', recent.length);
-    socket.emit('message_history', { type: 'message_history', messages: recent });
-  }
+
 
   // after sending message_history (or right at the top of the connection handler)
   (async () => {
@@ -4914,7 +4958,7 @@ io.on('connection', (socket) => {
   });
 
 
-//------------changes made regarding dashabord ***----------------------------------------------------------------
+  //------------changes made regarding dashabord ***----------------------------------------------------------------
   socket.on('dashboard_subscribe_pairs', async ({ roomIds } = {}) => {
     if (socket.data?.clientType !== 'dashboard') return;
 
@@ -4940,149 +4984,131 @@ io.on('connection', (socket) => {
     dlog('[DASHBOARD] subscribed rooms', { socketId: socket.id, count: safeRooms.length });
   });
 
-// -------- request_device_list --------
-socket.on('request_device_list', async () => {
-  dlog('[EVENT] request_device_list');
-  try {
-    const roomId = socket.data?.roomId;
+  // -------- request_device_list --------
+  socket.on('request_device_list', async () => {
+    dlog('[EVENT] request_device_list');
+    try {
+      const roomId = socket.data?.roomId;
 
-    // prevents spamming room_joined/device_list on every watchdog tick
-    if (socket.data._lastRoomJoined === undefined) socket.data._lastRoomJoined = '__init__';
-    if (socket.data._lastDeviceListSig === undefined) socket.data._lastDeviceListSig = '__init__';
+      // prevents spamming room_joined/device_list on every watchdog tick
+      if (socket.data._lastRoomJoined === undefined) socket.data._lastRoomJoined = '__init__';
+      if (socket.data._lastDeviceListSig === undefined) socket.data._lastDeviceListSig = '__init__';
 
-    // ✅ Cockpit VIEW-ONLY
-    if (socket.data?.clientType === 'cockpit' && !roomId) {
-      const target = normXr(socket.data?.cockpitForXrId);
-      dlog('[COCKPIT][REQ_LIST] no room yet, attempting join', { socketId: socket.id, target });
+      // ✅ Cockpit VIEW-ONLY
+      if (socket.data?.clientType === 'cockpit' && !roomId) {
+        const target = normXr(socket.data?.cockpitForXrId);
+        dlog('[COCKPIT][REQ_LIST] no room yet, attempting join', { socketId: socket.id, target });
 
-      if (target) {
-        const primary = await getClientSocketByXrIdCI_Cluster(target, socket);
-        const primaryLocal = clients?.get?.(target) || null;
-        const primaryFinal = primary || primaryLocal;
+        if (target) {
+          const primary = await getClientSocketByXrIdCI_Cluster(target, socket);
+          const primaryLocal = clients?.get?.(target) || null;
+          const primaryFinal = primary || primaryLocal;
 
-        const targetRoom = primaryFinal?.data?.roomId || null;
+          const targetRoom = primaryFinal?.data?.roomId || null;
 
-        dlog('[COCKPIT][REQ_LIST] primary lookup (cluster+local)', {
-          socketId: socket.id,
-          target,
-          primarySocketId: primaryFinal?.id || null,
-          targetRoom,
-          usedLocalFallback: !!(!primary && primaryLocal)
-        });
+          dlog('[COCKPIT][REQ_LIST] primary lookup (cluster+local)', {
+            socketId: socket.id,
+            target,
+            primarySocketId: primaryFinal?.id || null,
+            targetRoom,
+            usedLocalFallback: !!(!primary && primaryLocal)
+          });
 
-        // ✅ CASE 1: target paired → join room
-        if (targetRoom) {
-          try {
-            await socket.join(targetRoom);
-            socket.data.roomId = targetRoom;
+          // ✅ CASE 1: target paired → join room
+          if (targetRoom) {
+            try {
+              await socket.join(targetRoom);
+              socket.data.roomId = targetRoom;
 
-            // ✅ CHANGED: emit room_joined ONLY if changed
-            if (socket.data._lastRoomJoined !== targetRoom) {
-              socket.emit('room_joined', { roomId: targetRoom });
-              socket.data._lastRoomJoined = targetRoom;
+              // ✅ CHANGED: emit room_joined ONLY if changed
+              if (socket.data._lastRoomJoined !== targetRoom) {
+                socket.emit('room_joined', { roomId: targetRoom });
+                socket.data._lastRoomJoined = targetRoom;
+              }
+
+              const list = await buildDeviceListForRoom(targetRoom);
+              const safeList = Array.isArray(list) ? list : [];
+
+              // ✅ CHANGED: emit device_list ONLY if changed
+              const sig = JSON.stringify(safeList.map(d => [d?.xrId || '', d?.deviceName || '']));
+              if (sig !== socket.data._lastDeviceListSig) {
+                socket.emit('device_list', safeList);
+                socket.data._lastDeviceListSig = sig;
+              }
+
+              dlog('[COCKPIT][REQ_LIST] joined + sent list', { socketId: socket.id, targetRoom });
+              return;
+            } catch (e) {
+              dwarn('[COCKPIT][REQ_LIST] join failed', { err: e?.message || e, targetRoom });
+            }
+          }
+
+          // ✅ CASE 2: target online but NOT paired → show single device
+          if (primaryFinal) {
+            socket.data.roomId = null;
+
+            // ✅ CHANGED: DO NOT spam room_joined(null) every poll (this was causing flicker)
+            if (socket.data._lastRoomJoined !== null) {
+              socket.emit('room_joined', { roomId: null, reason: 'target_not_paired_yet' });
+              socket.data._lastRoomJoined = null;
             }
 
-            const list = await buildDeviceListForRoom(targetRoom);
-            const safeList = Array.isArray(list) ? list : [];
+            try {
+              const b = batteryByDevice?.get(target) || {};
+              const t = telemetryByDevice?.get(target) || null;
 
-            // ✅ CHANGED: emit device_list ONLY if changed
-            const sig = JSON.stringify(safeList.map(d => [d?.xrId || '', d?.deviceName || '']));
-            if (sig !== socket.data._lastDeviceListSig) {
-              socket.emit('device_list', safeList);
-              socket.data._lastDeviceListSig = sig;
+              const one = [{
+                xrId: target,
+                deviceName: primaryFinal.data?.deviceName || 'Unknown',
+                battery: (typeof b.pct === 'number') ? b.pct : null,
+                charging: !!b.charging,
+                batteryTs: b.ts || null,
+                ...(t ? { telemetry: t } : {}),
+              }];
+
+              // ✅ CHANGED: emit device_list ONLY if changed
+              const sig = JSON.stringify(one.map(d => [d?.xrId || '', d?.deviceName || '']));
+              if (sig !== socket.data._lastDeviceListSig) {
+                socket.emit('device_list', one);
+                socket.data._lastDeviceListSig = sig;
+              }
+
+              dlog('[COCKPIT][REQ_LIST] target online but not paired → sent self-only device_list', {
+                socketId: socket.id, target
+              });
+            } catch (e) {
+              const emptySig = '[]';
+              if (emptySig !== socket.data._lastDeviceListSig) {
+                socket.emit('device_list', []);
+                socket.data._lastDeviceListSig = emptySig;
+              }
+              dwarn('[COCKPIT][REQ_LIST] self-only list failed', { err: e?.message || e });
             }
-
-            dlog('[COCKPIT][REQ_LIST] joined + sent list', { socketId: socket.id, targetRoom });
             return;
-          } catch (e) {
-            dwarn('[COCKPIT][REQ_LIST] join failed', { err: e?.message || e, targetRoom });
           }
         }
 
-        // ✅ CASE 2: target online but NOT paired → show single device
-        if (primaryFinal) {
-          socket.data.roomId = null;
-
-          // ✅ CHANGED: DO NOT spam room_joined(null) every poll (this was causing flicker)
-          if (socket.data._lastRoomJoined !== null) {
-            socket.emit('room_joined', { roomId: null, reason: 'target_not_paired_yet' });
-            socket.data._lastRoomJoined = null;
-          }
-
-          try {
-            const b = batteryByDevice?.get(target) || {};
-            const t = telemetryByDevice?.get(target) || null;
-
-            const one = [{
-              xrId: target,
-              deviceName: primaryFinal.data?.deviceName || 'Unknown',
-              battery: (typeof b.pct === 'number') ? b.pct : null,
-              charging: !!b.charging,
-              batteryTs: b.ts || null,
-              ...(t ? { telemetry: t } : {}),
-            }];
-
-            // ✅ CHANGED: emit device_list ONLY if changed
-            const sig = JSON.stringify(one.map(d => [d?.xrId || '', d?.deviceName || '']));
-            if (sig !== socket.data._lastDeviceListSig) {
-              socket.emit('device_list', one);
-              socket.data._lastDeviceListSig = sig;
-            }
-
-            dlog('[COCKPIT][REQ_LIST] target online but not paired → sent self-only device_list', {
-              socketId: socket.id, target
-            });
-          } catch (e) {
-            const emptySig = '[]';
-            if (emptySig !== socket.data._lastDeviceListSig) {
-              socket.emit('device_list', []);
-              socket.data._lastDeviceListSig = emptySig;
-            }
-            dwarn('[COCKPIT][REQ_LIST] self-only list failed', { err: e?.message || e });
-          }
-          return;
+        // ✅ CASE 3: target offline → empty list
+        // ✅ CHANGED: DO NOT spam room_joined(null) every poll
+        if (socket.data._lastRoomJoined !== null) {
+          socket.emit('room_joined', { roomId: null, reason: 'primary_not_online_yet' });
+          socket.data._lastRoomJoined = null;
         }
+
+        // ✅ CHANGED: emit empty device_list only if changed
+        const emptySig = '[]';
+        if (emptySig !== socket.data._lastDeviceListSig) {
+          socket.emit('device_list', []);
+          socket.data._lastDeviceListSig = emptySig;
+        }
+
+        dlog('[COCKPIT][REQ_LIST] target offline; sent empty list', { socketId: socket.id, target });
+        return;
       }
 
-      // ✅ CASE 3: target offline → empty list
-      // ✅ CHANGED: DO NOT spam room_joined(null) every poll
-      if (socket.data._lastRoomJoined !== null) {
-        socket.emit('room_joined', { roomId: null, reason: 'primary_not_online_yet' });
-        socket.data._lastRoomJoined = null;
-      }
-
-      // ✅ CHANGED: emit empty device_list only if changed
-      const emptySig = '[]';
-      if (emptySig !== socket.data._lastDeviceListSig) {
-        socket.emit('device_list', []);
-        socket.data._lastDeviceListSig = emptySig;
-      }
-
-      dlog('[COCKPIT][REQ_LIST] target offline; sent empty list', { socketId: socket.id, target });
-      return;
-    }
-
-    // ✅ If paired → ONLY devices in this room
-    if (roomId) {
-      const list = await buildDeviceListForRoom(roomId);
-      const safeList = Array.isArray(list) ? list : [];
-
-      const sig = JSON.stringify(safeList.map(d => [d?.xrId || '', d?.deviceName || '']));
-      if (sig !== socket.data._lastDeviceListSig) {
-        socket.emit('device_list', safeList);
-        socket.data._lastDeviceListSig = sig;
-      }
-      return;
-    }
-
-    // ✅ Pair-aware fallback
-    const xrIdTmp = normXr(socket.data?.xrId);
-    const partnerTmp = xrIdTmp ? (pairedWith?.get?.(xrIdTmp) || null) : null;
-
-    if (!roomId && xrIdTmp && partnerTmp) {
-      const derivedRoom = getRoomIdForPair(xrIdTmp, partnerTmp);
-      try {
-        const list = await buildDeviceListForRoom(derivedRoom);
+      // ✅ If paired → ONLY devices in this room
+      if (roomId) {
+        const list = await buildDeviceListForRoom(roomId);
         const safeList = Array.isArray(list) ? list : [];
 
         const sig = JSON.stringify(safeList.map(d => [d?.xrId || '', d?.deviceName || '']));
@@ -5090,56 +5116,74 @@ socket.on('request_device_list', async () => {
           socket.emit('device_list', safeList);
           socket.data._lastDeviceListSig = sig;
         }
-      } catch (e) {
+        return;
+      }
+
+      // ✅ Pair-aware fallback
+      const xrIdTmp = normXr(socket.data?.xrId);
+      const partnerTmp = xrIdTmp ? (pairedWith?.get?.(xrIdTmp) || null) : null;
+
+      if (!roomId && xrIdTmp && partnerTmp) {
+        const derivedRoom = getRoomIdForPair(xrIdTmp, partnerTmp);
+        try {
+          const list = await buildDeviceListForRoom(derivedRoom);
+          const safeList = Array.isArray(list) ? list : [];
+
+          const sig = JSON.stringify(safeList.map(d => [d?.xrId || '', d?.deviceName || '']));
+          if (sig !== socket.data._lastDeviceListSig) {
+            socket.emit('device_list', safeList);
+            socket.data._lastDeviceListSig = sig;
+          }
+        } catch (e) {
+          const emptySig = '[]';
+          if (emptySig !== socket.data._lastDeviceListSig) {
+            socket.emit('device_list', []);
+            socket.data._lastDeviceListSig = emptySig;
+          }
+        }
+        return;
+      }
+
+      // ✅ NOT paired yet → show only self device
+      const xrId = normXr(socket.data?.xrId);
+      if (!xrId) {
         const emptySig = '[]';
         if (emptySig !== socket.data._lastDeviceListSig) {
           socket.emit('device_list', []);
           socket.data._lastDeviceListSig = emptySig;
         }
+        return;
       }
-      return;
-    }
 
-    // ✅ NOT paired yet → show only self device
-    const xrId = normXr(socket.data?.xrId);
-    if (!xrId) {
-      const emptySig = '[]';
-      if (emptySig !== socket.data._lastDeviceListSig) {
-        socket.emit('device_list', []);
-        socket.data._lastDeviceListSig = emptySig;
+      const b = batteryByDevice?.get(xrId) || {};
+      const t = telemetryByDevice?.get(xrId) || null;
+
+      const one = [{
+        xrId,
+        deviceName: socket.data?.deviceName || 'Unknown',
+        battery: (typeof b.pct === 'number') ? b.pct : null,
+        charging: !!b.charging,
+        batteryTs: b.ts || null,
+        ...(t ? { telemetry: t } : {}),
+      }];
+
+      const sig = JSON.stringify(one.map(d => [d?.xrId || '', d?.deviceName || '']));
+      if (sig !== socket.data._lastDeviceListSig) {
+        socket.emit('device_list', one);
+        socket.data._lastDeviceListSig = sig;
       }
-      return;
+
+    } catch (e) {
+      dwarn('[request_device_list] failed:', e.message);
+      try {
+        const emptySig = '[]';
+        if (socket.data?._lastDeviceListSig !== emptySig) {
+          socket.emit('device_list', []);
+          socket.data._lastDeviceListSig = emptySig;
+        }
+      } catch { }
     }
-
-    const b = batteryByDevice?.get(xrId) || {};
-    const t = telemetryByDevice?.get(xrId) || null;
-
-    const one = [{
-      xrId,
-      deviceName: socket.data?.deviceName || 'Unknown',
-      battery: (typeof b.pct === 'number') ? b.pct : null,
-      charging: !!b.charging,
-      batteryTs: b.ts || null,
-      ...(t ? { telemetry: t } : {}),
-    }];
-
-    const sig = JSON.stringify(one.map(d => [d?.xrId || '', d?.deviceName || '']));
-    if (sig !== socket.data._lastDeviceListSig) {
-      socket.emit('device_list', one);
-      socket.data._lastDeviceListSig = sig;
-    }
-
-  } catch (e) {
-    dwarn('[request_device_list] failed:', e.message);
-    try {
-      const emptySig = '[]';
-      if (socket.data?._lastDeviceListSig !== emptySig) {
-        socket.emit('device_list', []);
-        socket.data._lastDeviceListSig = emptySig;
-      }
-    } catch { }
-  }
-});
+  });
 
   // -------- pair_with --------
   // Option B: DB-driven auto pairing is enabled.
@@ -5422,13 +5466,16 @@ socket.on('request_device_list', async () => {
         xrId: from,
         timestamp,
       };
-      addToMessageHistory(msg);
+
 
       if (!pairRoomId) {
         dwarn('[message] no pairRoomId (not paired yet); ignoring');
         socket.emit('message_error', { message: 'Not paired yet (no room)' });
         return;
       }
+
+      // ✅ store only after we know the pair room
+      addToMessageHistory(socket, msg);
 
       dlog('[message] pair-room emit', { roomId: pairRoomId, ignoredTo: to || null });
       io.to(pairRoomId).emit('message', msg);
@@ -5593,7 +5640,7 @@ socket.on('request_device_list', async () => {
 
 
 
-//------------changes made regarding dashabord ***----------------------------------------------------------------
+  //------------changes made regarding dashabord ***----------------------------------------------------------------
   socket.on('webrtc_quality', (q) => {
     dlog('[QUALITY] recv', q);
     try {
@@ -5661,12 +5708,16 @@ socket.on('request_device_list', async () => {
 
   // -------- message_history (on demand) --------
   socket.on('message_history', () => {
-    dlog('[EVENT] message_history request');
+    const roomId = roomForHistory(socket);
+    dlog('[EVENT] message_history request; room=', roomId);
+
     socket.emit('message_history', {
       type: 'message_history',
-      messages: messageHistory.slice(-10),
+      roomId,
+      messages: getMessages(roomId).slice(-10),
     });
   });
+
 
 
 
@@ -5701,7 +5752,7 @@ socket.on('request_device_list', async () => {
 
 
 
-//------------changes made regarding dashabord ***----------------------------------------------------------------
+  //------------changes made regarding dashabord ***----------------------------------------------------------------
   socket.on('disconnect', async (reason) => {
     if (socket.data?.clientType === 'cockpit' || socket.data?.clientType === 'dashboard') return;
     dlog('❎ [EVENT] disconnect', {

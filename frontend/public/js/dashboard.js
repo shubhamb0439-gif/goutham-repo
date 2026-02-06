@@ -228,6 +228,7 @@ function paintNowStamp() {
 // Gate first paint until both initial snapshots arrive
 let gotInitialDevices = false;
 let gotInitialPairs = false;
+let currentPage = 1;   // ✅ pagination state (GLOBAL)
 
 function renderIfReady() {
   if (!gotInitialDevices || !gotInitialPairs) return;
@@ -739,7 +740,7 @@ function paintAllCenterBoxes() {
 function buildRows() {
   // 1) If DB mappings exist, render one row per mapping (even if offline)
   if (mappedPairs.length) {
-    return mappedPairs.map((p, i) => {
+    const rows = mappedPairs.map((p, i) => {
       const providerState = computeState(p.providerXrId);
       const scribeState = computeState(p.scribeXrId);
 
@@ -764,6 +765,20 @@ function buildRows() {
         }
       };
     });
+
+    // ✅ Move fully-connected (both green) pairs to the top (stable sort)
+    const isGreen = (s) => s === 'available';
+
+    return rows
+      .map((r, idx) => ({ r, idx }))
+      .sort((a, b) => {
+        const aOn = isGreen(a.r.left.state) && isGreen(a.r.right.state);
+        const bOn = isGreen(b.r.left.state) && isGreen(b.r.right.state);
+        if (aOn !== bOn) return aOn ? -1 : 1;   // both-online first
+        return a.idx - b.idx;                   // preserve DB order inside groups
+      })
+      .map(x => x.r);
+
   }
 
   // 2) Fallback — preserves old hardcoded behavior if DB mappings fail
@@ -889,7 +904,26 @@ function rowHTML({ label, left, scribe, right }) {
 function renderDevices() {
   const el = document.getElementById('rows');
   if (!el) return;
-  el.innerHTML = buildRows().map(rowHTML).join('');
+  const rows = buildRows();
+
+  // pagination: 10 per page
+  const PER_PAGE = 8;
+  const totalPages = Math.max(1, Math.ceil(rows.length / PER_PAGE));
+
+  // keep page index safe
+  currentPage = Math.min(Math.max(1, currentPage), totalPages);
+
+  const start = (currentPage - 1) * PER_PAGE;
+  const pageRows = rows.slice(start, start + PER_PAGE);
+
+  // render ONLY current page rows
+  el.innerHTML = pageRows.map(rowHTML).join('');
+
+  // render pagination UI (no effect on rows)
+  if (typeof renderPagination === 'function') {
+    renderPagination(totalPages, rows.length);
+  }
+
 
   // Keep metrics visible between updates
   paintConnMetricsFromCache();
@@ -903,6 +937,100 @@ function renderDevices() {
   gotInitialDevices = true;
   gotInitialPairs = true;
 }
+
+function renderPagination(totalPages, totalItems) {
+  const host = document.getElementById('hubPagination');
+  if (!host) return;
+
+  // Hide pager when not needed
+  if (!totalPages || totalPages <= 1) {
+    host.innerHTML = '';
+    return;
+  }
+
+  const mkBtn = ({ label, page, disabled = false, active = false, aria }) => {
+    const base =
+      'px-3 py-1.5 rounded-lg text-sm font-semibold border transition ' +
+      'select-none';
+    const cls = active
+      ? base + ' bg-white text-black border-white'
+      : base + ' bg-white/5 text-white border-white/20 hover:bg-white/10';
+    const dis = disabled ? ' opacity-40 cursor-not-allowed pointer-events-none' : '';
+    return `<button
+      type="button"
+      class="${cls}${dis}"
+      data-page="${page}"
+      ${aria ? `aria-label="${aria}"` : ''}
+      ${active ? 'aria-current="page"' : ''}>${label}</button>`;
+  };
+
+  // Compact modern pager: Prev | 1 … (window) … N | Next
+  const windowSize = 5; // show up to 5 page numbers in the middle
+  const half = Math.floor(windowSize / 2);
+
+  let start = Math.max(1, currentPage - half);
+  let end = Math.min(totalPages, start + windowSize - 1);
+  start = Math.max(1, end - windowSize + 1);
+
+  const parts = [];
+
+  parts.push(mkBtn({
+    label: 'Prev',
+    page: Math.max(1, currentPage - 1),
+    disabled: currentPage === 1,
+    aria: 'Previous page'
+  }));
+
+  // First page + leading ellipsis
+  parts.push(mkBtn({ label: '1', page: 1, active: currentPage === 1, aria: 'Page 1' }));
+  if (start > 2) parts.push(`<span class="px-2 text-white/60">…</span>`);
+
+  // Middle window (avoid duplicating page 1 / last page)
+  for (let p = Math.max(2, start); p <= Math.min(end, totalPages - 1); p++) {
+    parts.push(mkBtn({ label: String(p), page: p, active: currentPage === p, aria: `Page ${p}` }));
+  }
+
+  // Trailing ellipsis + last page
+  if (end < totalPages - 1) parts.push(`<span class="px-2 text-white/60">…</span>`);
+  if (totalPages > 1) {
+    parts.push(mkBtn({
+      label: String(totalPages),
+      page: totalPages,
+      active: currentPage === totalPages,
+      aria: `Page ${totalPages}`
+    }));
+  }
+
+  parts.push(mkBtn({
+    label: 'Next',
+    page: Math.min(totalPages, currentPage + 1),
+    disabled: currentPage === totalPages,
+    aria: 'Next page'
+  }));
+
+  // Top row: buttons (keeps same dashboard size; only adds a small footer)
+  host.innerHTML = `
+    <div class="flex items-center justify-between gap-3 flex-wrap">
+      <div class="flex items-center gap-2 flex-wrap">${parts.join('')}</div>
+      <div class="text-xs text-white/60">
+        Showing ${(totalItems ? ((currentPage - 1) * 10 + 1) : 0)}–${Math.min(totalItems, currentPage * 10)} of ${totalItems}
+      </div>
+    </div>
+  `;
+
+  // Click handling (single delegated handler, replaces old one each render)
+  host.onclick = (e) => {
+    const btn = e.target.closest('button[data-page]');
+    if (!btn) return;
+    const next = Number(btn.getAttribute('data-page'));
+    if (!Number.isFinite(next)) return;
+    if (next === currentPage) return;
+
+    currentPage = next;
+    renderDevices(); // re-render current page only
+  };
+}
+
 
 
 // ---------------- Socket wiring ----------------

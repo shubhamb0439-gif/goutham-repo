@@ -993,7 +993,7 @@ function initAssignUsersTopPanel() {
   }
 }
 
-// ================= Assign Users: Dual View (By Scribe / By Provider) =================
+
 // ================= Assign Users: Dual View (By Scribe / By Provider) =================
 function initAssignUsersDualView() {
   const byScribeBtn = document.getElementById('assignViewByScribeBtn');
@@ -1019,6 +1019,8 @@ function initAssignUsersDualView() {
 
   // Optional button (OK if missing in HTML)
   const saveBtn = document.getElementById('assignUsersSaveButtonByProvider');
+
+
 
   if (!byScribeBtn || !byProviderBtn || !byScribeView || !byProviderView) return;
 
@@ -1229,14 +1231,12 @@ function initAssignUsersDualView() {
     clinicSelect.onchange = () => {
       refreshProviderDropdownByClinic();
 
-      // reset provider selection explicitly (prevents stale provider)
+      // reset provider filter (prevents stale provider)
       if (providerSelect) providerSelect.value = '';
 
-      // reset downstream selects whenever clinic changes
-      resetManagerAndReportee();
-
-      // clear table until provider selected
-      setProviderTableMessage('Select a Provider above to view assignments.');
+      // Immediately refresh providers tables (mapped + unmapped),
+      // filtered by clinic (and provider if selected later).
+      loadAssignProvidersTable();
     };
 
   }
@@ -1246,22 +1246,11 @@ function initAssignUsersDualView() {
     providerSelect.dataset.byProviderProviderBound = '1';
 
     providerSelect.onchange = () => {
-      const providerId = providerSelect.value;
-
-      // reset downstream first
-      resetManagerAndReportee();
-
-      if (!providerId) {
-        setProviderTableMessage('Select a Provider above to view assignments.');
-        return;
-      }
-
-      // populate Manager dropdown now that provider is chosen
-      populateManagerDropdown();
-
-      // load table (existing behavior)
-      renderProviderAssignments(providerId);
+      // Provider is FILTER ONLY now.
+      // Do not gate table rendering behind provider selection.
+      loadAssignProvidersTable();
     };
+
   }
 
 
@@ -1299,18 +1288,310 @@ function initAssignUsersDualView() {
 
 
 
-    setProviderTableMessage('Select a Provider above to view assignments.');
+    // Providers tab is now FILTER-ONLY on top.
+    // Hide the old top-level assignment controls.
+    if (managerSelect) managerSelect.classList.add('hidden');
+    if (reporteeSelect) reporteeSelect.classList.add('hidden');
+    if (saveBtn) saveBtn.classList.add('hidden');
+
+    // Load mapped + unmapped providers by default (no provider selection required)
+    await loadAssignProvidersTable();
+
+  }
+
+  async function loadAssignProvidersTable() {
+    if (!byProviderView || !providerTableBody) return;
+
+    if (!canScreen(ASSIGN_USERS_SCREEN_ID, 'read')) {
+      showToast('You do not have permission to view Assign Users.', 'error');
+      return;
+    }
+
+    // 1) Render mapped providers (top table) using the existing renderer
+    // Pass empty providerId so it can render ALL (we’ll update renderProviderAssignments below)
+    await renderProviderAssignments('');
+
+    // 2) Build unmapped providers section below mapped table
+    const mappedTable = providerTableBody.closest('table');
+    if (!mappedTable) return;
+
+    let unmappedWrap = document.getElementById('unmappedProvidersWrap');
+    if (!unmappedWrap) {
+      unmappedWrap = document.createElement('div');
+      unmappedWrap.id = 'unmappedProvidersWrap';
+      unmappedWrap.className = 'mt-6';
+      mappedTable.insertAdjacentElement('beforebegin', unmappedWrap);
+    }
+
+    // ✅ ADD: Mapped Providers heading (must appear BELOW Unmapped Providers)
+    let mappedProvidersHeading = document.getElementById('mappedProvidersHeading');
+    if (!mappedProvidersHeading) {
+      mappedProvidersHeading = document.createElement('div');
+      mappedProvidersHeading.id = 'mappedProvidersHeading';
+      mappedProvidersHeading.className = 'text-white font-semibold mb-2 mt-6';
+      mappedProvidersHeading.textContent = 'Mapped Providers';
+    }
+
+    // Place it between Unmapped section and the mapped table
+    unmappedWrap.insertAdjacentElement('afterend', mappedProvidersHeading);
 
 
-    if (saveBtn) {
-      const canWrite = canScreen(ASSIGN_USERS_SCREEN_ID, 'write');
-      saveBtn.disabled = !canWrite;
-      saveBtn.title = canWrite ? '' : 'You only have READ permission for Assign Users';
+
+    // Pull filters (filters only)
+    const clinicIdFilter = String(clinicSelect?.value || '').trim();
+    const providerIdFilter = String(providerSelect?.value || '').trim();
+
+    // Fetch mappings so we can compute unmapped providers
+    let mappings = [];
+    let mappingResp = {};
+    try {
+      const res = await fetch('/api/platform/scribe-provider-mapping', {
+        method: 'GET',
+        credentials: 'include',
+      });
+      mappingResp = await res.json().catch(() => ({}));
+      if (!res.ok || !mappingResp.ok) throw new Error(mappingResp.message || 'Failed to load mappings');
+      mappings = Array.isArray(mappingResp.mappings) ? mappingResp.mappings : [];
+    } catch (e) {
+      console.error('loadAssignProvidersTable mappings error:', e);
+      unmappedWrap.innerHTML = `<div class="text-sm text-gray-500 mt-2">Failed to load unmapped providers.</div>`;
+      return;
+    }
+
+    // Which providers are already mapped?
+    // Prefer global list from backend (for correct Unmapped Providers),
+    // fallback to scoped mappings if backend doesn't provide it.
+    const mappedProviderIds = new Set(
+      Array.isArray(mappingResp.mappedProviderIdsAll)
+        ? mappingResp.mappedProviderIdsAll.map(String)
+        : mappings
+          .map((m) => {
+            const providerObjId = m?.provider && (m.provider.id ?? m.provider.user_id);
+            const providerFlatId = m?.provider_user_id ?? m?.providerId ?? m?.provider_userId;
+            const effectiveProviderId = providerObjId ?? providerFlatId;
+            return effectiveProviderId != null ? String(effectiveProviderId) : '';
+          })
+          .filter(Boolean)
+    );
+
+    const providersAll = Array.isArray(assignUsersOptions.providers) ? assignUsersOptions.providers : [];
+
+    // Unmapped providers = providers that are NOT in mappedProviderIds
+    let unmappedProviders = providersAll.filter((p) => {
+      const pid = String(p.id ?? p.user_id ?? '');
+      return pid && !mappedProviderIds.has(pid);
+    });
+
+    // Apply filters (clinic/provider)
+    if (clinicIdFilter) {
+      unmappedProviders = unmappedProviders.filter((p) => {
+        const provClinicId = p.clinic_id ?? p.clinicId;
+        return provClinicId != null && String(provClinicId) === String(clinicIdFilter);
+      });
+    }
+    if (providerIdFilter) {
+      unmappedProviders = unmappedProviders.filter((p) => String(p.id) === String(providerIdFilter));
+    }
+
+    if (!unmappedProviders.length) {
+      unmappedWrap.innerHTML = `
+      <div class="text-white font-semibold mb-2">Unmapped Providers</div>
+      <div class="text-sm text-gray-500 mt-2">No unmapped providers found.</div>
+    `;
+      return;
+    }
+
+    const canWrite = canScreen(ASSIGN_USERS_SCREEN_ID, 'write');
+
+    // Managers list derived from scribes (same logic style you already use)
+    const allScribes = Array.isArray(assignUsersOptions.scribes) ? assignUsersOptions.scribes : [];
+    const managers = Array.from(
+      new Set(allScribes.map(s => String(s.managerName || s.manager_name || '').trim()).filter(Boolean))
+    );
+
+    function buildManagerOptionsHtml(selected) {
+      const sel = String(selected || '').trim();
+      return ['<option value="">Select Manager</option>'].concat(
+        managers.map(m => {
+          const s = (String(m).trim() === sel) ? 'selected' : '';
+          return `<option value="${escapeHtml(m)}" ${s}>${escapeHtml(m)}</option>`;
+        })
+      ).join('');
+    }
+
+    function buildReporteeOptionsHtml(managerName, selectedScribeId) {
+      const manager = String(managerName || '').trim();
+      let reportees = allScribes.filter((s) => {
+        const mn = String(s.managerName || s.manager_name || '').trim();
+        return manager && mn === manager;
+      });
+      if (!reportees.length) reportees = allScribes;
+
+      const selId = String(selectedScribeId || '');
+      return ['<option value="">Select Reportee</option>'].concat(
+        reportees.map((s) => {
+          const sid = s.id ?? s.user_id;
+          const selected = String(sid) === selId ? 'selected' : '';
+          const label = escapeHtml(formatUserDropdownLabel(s));
+          return `<option value="${sid}" ${selected}>${label}</option>`;
+        })
+      ).join('');
+    }
+
+    // Render Unmapped Providers table
+    unmappedWrap.innerHTML = `
+    <div class="text-white font-semibold mb-2">Unmapped Providers</div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-left border-collapse">
+        <thead>
+          <tr class="text-gray-400 border-b border-gray-700">
+            <th class="py-2">Provider Name</th>
+            <th class="py-2">Provider Email</th>
+            <th class="py-2">Provider XR ID</th>
+            <th class="py-2">Clinic</th>
+            <th class="py-2">Manager</th>
+            <th class="py-2">Reportee (Scribe)</th>
+            <th class="py-2 text-right">Action</th>
+          </tr>
+        </thead>
+        <tbody id="unmappedProvidersTbody">
+          ${unmappedProviders.map((p) => {
+      const pid = p.id ?? p.user_id;
+      const pName = escapeHtmlInline(p.name || p.full_name || 'N/A');
+      const pEmail = escapeHtmlInline(p.email || 'N/A');
+      const pXrId = escapeHtmlInline(p.xrId || p.xr_id || 'N/A');
+
+      const provClinicId = p.clinic_id ?? p.clinicId ?? '';
+      const clinicObj = (userFormDynamicOptions.clinics || []).find(
+        (c) => String(c.id) === String(provClinicId)
+      );
+      const clinicName = escapeHtmlInline(
+        clinicObj?.clinic || clinicObj?.name || p.clinic_name || p.clinicName || 'N/A'
+      );
+
+      return `
+              <tr class="border-b border-gray-800" data-unmapped-provider-id="${escapeHtmlInline(pid)}">
+                <td class="py-3 text-sm">${pName}</td>
+                <td class="py-3 text-sm">${pEmail}</td>
+                <td class="py-3 text-sm">${pXrId}</td>
+
+                <td class="py-3 text-sm">${clinicName}</td>
+
+                <td class="py-3">
+                  <select class="unmapped-provider-manager px-2 py-1 rounded bg-gray-700 border border-gray-600 text-white text-xs"
+                          ${canWrite ? '' : 'disabled'}>
+                    ${buildManagerOptionsHtml('')}
+                  </select>
+                </td>
+
+                <td class="py-3">
+                  <select class="unmapped-provider-reportee px-2 py-1 rounded bg-gray-700 border border-gray-600 text-white text-xs"
+                          disabled
+                          ${canWrite ? '' : 'disabled'}>
+                    <option value="">Select manager first</option>
+                  </select>
+                </td>
+
+                <td class="py-3 text-right whitespace-nowrap">
+                  <button class="unmapped-provider-save px-3 py-1 rounded bg-green-600 hover:bg-green-700 text-white text-xs shrink-0"
+                          ${canWrite ? '' : 'disabled'}>
+                    Save
+                  </button>
+                </td>
+              </tr>
+            `;
+    }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+    const unmappedTbody = document.getElementById('unmappedProvidersTbody');
+    if (!unmappedTbody) return;
+
+    // Avoid stacking listeners
+    if (!unmappedTbody.dataset.bound) {
+      unmappedTbody.dataset.bound = '1';
+
+      // Manager change → populate reportees in the same row
+      unmappedTbody.addEventListener('change', (e) => {
+        const mgrSel = e.target.closest('.unmapped-provider-manager');
+        if (!mgrSel) return;
+
+        const row = mgrSel.closest('tr[data-unmapped-provider-id]');
+        if (!row) return;
+
+        const reporteeSel = row.querySelector('.unmapped-provider-reportee');
+        if (!reporteeSel) return;
+
+        const managerName = mgrSel.value;
+        reporteeSel.innerHTML = buildReporteeOptionsHtml(managerName, '');
+        reporteeSel.disabled = !managerName;
+      });
+
+      // Save mapping
+      unmappedTbody.addEventListener('click', async (e) => {
+        const btn = e.target.closest('.unmapped-provider-save');
+        if (!btn) return;
+
+        if (!canScreen(ASSIGN_USERS_SCREEN_ID, 'write')) {
+          showToast('You only have READ permission for Assign Users. Editing is not allowed.', 'error');
+          return;
+        }
+
+        const row = btn.closest('tr[data-unmapped-provider-id]');
+        if (!row) return;
+
+        const providerId = row.getAttribute('data-unmapped-provider-id');
+        const reporteeSel = row.querySelector('.unmapped-provider-reportee');
+        const scribeId = reporteeSel ? reporteeSel.value : '';
+
+        const providerIdNum = Number(providerId);
+        const scribeIdNum = Number(scribeId);
+
+        if (!Number.isFinite(providerIdNum) || providerIdNum <= 0 || !Number.isFinite(scribeIdNum) || scribeIdNum <= 0) {
+          showToast('Please select Manager and Reportee before saving.', 'error');
+          return;
+        }
+
+        try {
+          btn.disabled = true;
+          btn.textContent = 'Saving...';
+
+          const res = await fetch('/api/platform/scribe-provider-mapping', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+              scribeUserId: scribeIdNum,
+              providerUserId: providerIdNum,
+            }),
+          });
+
+          const out = await res.json().catch(() => ({}));
+          if (!res.ok || !out.ok) throw new Error(out.message || 'Failed to save assignment');
+
+          showToast(out.message || 'Assignment saved', 'success');
+
+          // refresh providers tab view
+          await loadAssignProvidersTable();
+
+        } catch (err) {
+          console.error('Unmapped provider save error:', err);
+          showToast(err.message || 'Failed to save assignment', 'error');
+        } finally {
+          btn.disabled = !canScreen(ASSIGN_USERS_SCREEN_ID, 'write');
+          btn.textContent = 'Save';
+        }
+      });
     }
   }
 
+
+
   async function renderProviderAssignments(providerId) {
-    if (!providerId || !providerTableBody) return;
+    if (!providerTableBody) return;
+
 
     try {
       const res = await fetch('/api/platform/scribe-provider-mapping', {
@@ -1323,15 +1604,48 @@ function initAssignUsersDualView() {
 
       const mappings = Array.isArray(data.mappings) ? data.mappings : [];
 
-      const filtered = mappings.filter((m) => {
+      // Top dropdowns are FILTERS ONLY now
+      const clinicIdFilter = String(clinicSelect?.value || '').trim();
+      const providerIdFilter = String(providerSelect?.value || '').trim();
+
+      // If providerId param is passed (older path), honor it.
+      // Otherwise show ALL (new default).
+      const explicitProviderId = providerId ? String(providerId).trim() : '';
+
+      // Helper to get provider id from mapping (supports both object and flat shapes)
+      const getMappingProviderId = (m) => {
         const providerObjId = m.provider && (m.provider.id ?? m.provider.user_id);
         const providerFlatId = m.provider_user_id ?? m.providerId ?? m.provider_userId;
-        const effectiveProviderId = providerObjId ?? providerFlatId;
-        return String(effectiveProviderId) === String(providerId);
-      });
+        return providerObjId ?? providerFlatId;
+      };
+
+      // Helper to get clinic id from mapping/provider
+      const getMappingClinicId = (m) => {
+        const p = m.provider || {};
+        return p.clinic_id ?? p.clinicId ?? m.clinic_id ?? m.clinicId;
+      };
+
+      let filtered = mappings;
+
+      // 1) If providerId param was provided, filter by it (backward compatible)
+      if (explicitProviderId) {
+        filtered = filtered.filter((m) => String(getMappingProviderId(m)) === explicitProviderId);
+      }
+
+      // 2) Apply Provider dropdown filter (if selected)
+      if (providerIdFilter) {
+        filtered = filtered.filter((m) => String(getMappingProviderId(m)) === String(providerIdFilter));
+      }
+
+      // 3) Apply Clinic dropdown filter (if selected)
+      if (clinicIdFilter) {
+        filtered = filtered.filter((m) => String(getMappingClinicId(m)) === String(clinicIdFilter));
+      }
+
 
       if (!filtered.length) {
-        setProviderTableMessage('No scribes assigned to this provider.');
+        setProviderTableMessage('No mapped providers found for the selected filters.');
+
         return;
       }
 
@@ -1412,6 +1726,8 @@ function initAssignUsersDualView() {
         const s = m.scribe || {};
         const p = m.provider || {};
 
+        const providerIdForRow = getMappingProviderId(m);
+
         const pName = escapeHtml(p.name || p.full_name || 'N/A');
         const pEmail = escapeHtml(p.email || 'N/A');
         const pXrId = escapeHtml(p.xrId || p.xr_id || 'N/A');
@@ -1440,6 +1756,7 @@ function initAssignUsersDualView() {
         return `
 <tr class="table-row border-b border-gray-700"
     data-scribe-id="${escapeHtml(s.id)}"
+    data-provider-id="${escapeHtml(providerIdForRow)}"
     data-orig-manager="${escapeHtml(s.managerName || s.manager_name || '')}"
     data-orig-scribe="${escapeHtml(s.id)}">
 
@@ -1513,6 +1830,8 @@ function initAssignUsersDualView() {
       showToast(err.message || 'Failed to load provider assignments', 'error');
     }
   }
+
+
 
   resetManagerAndReportee();
 
@@ -1631,7 +1950,9 @@ function initAssignUsersDualView() {
           return;
         }
 
-        const providerId = providerSelect ? providerSelect.value : '';
+        // Provider must come from the row now (top Provider filter may be empty)
+        const providerId = row.dataset.providerId || (providerSelect ? providerSelect.value : '');
+
         const reporteeSel = row.querySelector('select[data-action="provider-row-reportee"]');
         const newScribeId = reporteeSel ? reporteeSel.value : '';
 
@@ -1660,9 +1981,9 @@ function initAssignUsersDualView() {
 
           showToast('Mapping updated', 'success');
 
-          // refresh tables so view mode shows correct values
-          await loadAssignUsersTable();
-          await renderProviderAssignments(providerId);
+          // refresh Providers tab (mapped + unmapped) so the row moves correctly
+          await loadAssignProvidersTable();
+
 
         } catch (err) {
           console.error('Provider row save error:', err);
@@ -2638,10 +2959,25 @@ async function loadAssignUsersTable() {
     const tableBody = document.getElementById('assignUsersTable');
     if (!tableBody) return;
 
-    // ✅ Scribe filter empty-state (like Provider view)
+    // ✅ Scribe filter
     const scribeSelect = document.getElementById('assignScribeFilter'); // <-- confirm this id in HTML
     const selectedScribeId = scribeSelect ? scribeSelect.value : '';
 
+    // ✅ All scribes visible to this user (Manager vs SuperAdmin is already handled by backend)
+    const allScribes = Array.isArray(assignUsersOptions?.scribes) ? assignUsersOptions.scribes : [];
+
+    // ✅ Build a set of scribes that have at least one mapping
+    const mappedScribeIdSet = new Set(
+      mappings
+        .map((m) => {
+          const sObjId = m.scribe && (m.scribe.id ?? m.scribe.user_id);
+          const sFlatId = m.scribe_user_id ?? m.scribeId ?? m.scribe_userId;
+          return String(sObjId ?? sFlatId ?? '');
+        })
+        .filter(Boolean)
+    );
+
+    // ✅ Filter mapped rows (top table)
     let filteredMappings = mappings;
 
     if (selectedScribeId) {
@@ -2651,144 +2987,323 @@ async function loadAssignUsersTable() {
         const effectiveScribeId = sObjId ?? sFlatId;
         return String(effectiveScribeId) === String(selectedScribeId);
       });
+    }
 
-      if (!filteredMappings.length) {
-        tableBody.innerHTML = `
-      <tr>
-        <td colspan="9" class="py-8 text-center text-gray-500">
-          No provider assigned to this scribe.
-        </td>
-      </tr>
-    `;
-        return;
+    // ✅ Filter unmapped scribes (bottom table)
+    let unmappedScribes = allScribes.filter((s) => {
+      const sid = s.id ?? s.user_id;
+      return sid != null && !mappedScribeIdSet.has(String(sid));
+    });
+
+    if (selectedScribeId) {
+      unmappedScribes = unmappedScribes.filter(
+        (s) => String(s.id ?? s.user_id) === String(selectedScribeId)
+      );
+    }
+
+    // --- 2) Render unmapped section BELOW mapped table ---
+    const mappedTable = tableBody.closest('table');
+    if (mappedTable) {
+      // Create (or reuse) a container right after the mapped table
+      let unmappedWrap = document.getElementById('unmappedScribesWrap');
+
+      if (!unmappedWrap) {
+        unmappedWrap = document.createElement('div');
+        unmappedWrap.id = 'unmappedScribesWrap';
+        unmappedWrap.className = 'mt-6';
+        mappedTable.insertAdjacentElement('beforebegin', unmappedWrap);
+      }
+
+      if (!unmappedScribes.length) {
+        unmappedWrap.innerHTML = `
+          <div class="text-sm text-gray-500 mt-2">
+            No unmapped scribes found.
+          </div>
+        `;
+      } else {
+        const ASSIGN_USERS_SCREEN_ID = 8;
+        const canWrite = canScreen(ASSIGN_USERS_SCREEN_ID, 'write');
+
+        unmappedWrap.innerHTML = `
+          <div class="text-white font-semibold mb-2">Unmapped Scribes</div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse">
+              <thead>
+                <tr class="text-gray-400 border-b border-gray-700">
+                  <th class="py-2">Scribe Name</th>
+                  <th class="py-2">Scribe Email</th>
+                  <th class="py-2">Scribe XR ID</th>
+                  <th class="py-2">Scribe Manager</th>
+                  <th class="py-2">Clinic</th>
+                  <th class="py-2">Provider</th>
+                  <th class="py-2 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody id="unmappedScribesTbody">
+                ${unmappedScribes
+            .map((s) => {
+              const sid = s.id ?? s.user_id;
+              const sName = escapeHtmlInline(s.name || s.full_name || 'N/A');
+              const sEmail = escapeHtmlInline(s.email || 'N/A');
+              const sXrId = escapeHtmlInline(s.xrId || s.xr_id || 'N/A');
+              const sManager = escapeHtmlInline(
+                s.managerName || s.manager_name || s.manager || 'N/A'
+              );
+
+              return `
+                      <tr class="border-b border-gray-800" data-unmapped-scribe-id="${escapeHtmlInline(sid)}">
+                        <td class="py-3 text-sm">${sName}</td>
+                        <td class="py-3 text-sm">${sEmail}</td>
+                        <td class="py-3 text-sm">${sXrId}</td>
+                        <td class="py-3 text-sm">${sManager}</td>
+
+                        <td class="py-3">
+                          <select class="unmapped-clinic px-2 py-1 rounded bg-gray-700 border border-gray-600 text-white text-xs"
+                                  ${canWrite ? '' : 'disabled'}>
+                            ${buildClinicOptionsHtml('')}
+                          </select>
+                        </td>
+
+                        <td class="py-3">
+                          <select class="unmapped-provider px-2 py-1 rounded bg-gray-700 border border-gray-600 text-white text-xs"
+                                  disabled
+                                  ${canWrite ? '' : 'disabled'}>
+                            <option value="">Select clinic first</option>
+                          </select>
+                        </td>
+
+                        <td class="py-3 text-right whitespace-nowrap">
+                          <button class="unmapped-save px-3 py-1 rounded bg-green-600 hover:bg-green-700 text-white text-xs shrink-0"
+                                  ${canWrite ? '' : 'disabled'}>
+                            Save
+                          </button>
+                        </td>
+                      </tr>
+                    `;
+            })
+            .join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+
+        const unmappedTbody = document.getElementById('unmappedScribesTbody');
+        if (unmappedTbody && !unmappedTbody.dataset.bound) {
+          unmappedTbody.dataset.bound = '1';
+
+          // clinic -> provider cascade
+          unmappedTbody.addEventListener('change', (e) => {
+            const clinicSel = e.target.closest('.unmapped-clinic');
+            if (!clinicSel) return;
+
+            const row = clinicSel.closest('tr[data-unmapped-scribe-id]');
+            if (!row) return;
+
+            const providerSel = row.querySelector('.unmapped-provider');
+            if (!providerSel) return;
+
+            const clinicId = clinicSel.value;
+            providerSel.innerHTML = buildProviderOptionsHtml(clinicId, '');
+            const hasValidOptions = providerSel.querySelectorAll('option').length > 1;
+            providerSel.disabled = !clinicId || !hasValidOptions;
+          });
+
+          // Save mapping
+          unmappedTbody.addEventListener('click', async (e) => {
+            const btn = e.target.closest('.unmapped-save');
+            if (!btn) return;
+
+            const row = btn.closest('tr[data-unmapped-scribe-id]');
+            if (!row) return;
+
+            const scribeId = row.getAttribute('data-unmapped-scribe-id');
+            const providerSel = row.querySelector('.unmapped-provider');
+            const providerId = providerSel ? providerSel.value : '';
+
+            const scribeIdNum = Number(scribeId);
+            const providerIdNum = Number(providerId);
+
+            if (!Number.isFinite(scribeIdNum) || !Number.isFinite(providerIdNum) || providerIdNum <= 0) {
+              showToast('Please select Clinic and Provider before saving.', 'error');
+              return;
+            }
+
+            try {
+              btn.disabled = true;
+              btn.textContent = 'Saving...';
+
+              const res = await fetch('/api/platform/scribe-provider-mapping', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({
+                  scribeUserId: scribeIdNum,
+                  providerUserId: providerIdNum,
+                }),
+              });
+
+              const out = await res.json().catch(() => ({}));
+              if (!res.ok || !out.ok) throw new Error(out.message || 'Failed to save assignment');
+
+              showToast(out.message || 'Assignment saved', 'success');
+
+              // refresh mapped + unmapped
+              await loadAssignUsersTable();
+            } catch (err) {
+              console.error('Unmapped save error:', err);
+              showToast(err.message || 'Failed to save assignment', 'error');
+            } finally {
+              btn.disabled = !canScreen(ASSIGN_USERS_SCREEN_ID, 'write');
+              btn.textContent = 'Save';
+            }
+          });
+        }
       }
     }
 
 
-    // Option A table has 9 columns
+
+    // --- 1) Render mapped section (existing table) ---
+    // ✅ ADD THIS BLOCK (Mapped Scribes heading)
+    const mappedTableEl = tableBody.closest('table');
+    if (mappedTableEl && !document.getElementById('mappedScribesHeading')) {
+      const heading = document.createElement('div');
+      heading.id = 'mappedScribesHeading';
+      heading.className = 'text-white font-semibold mb-2 mt-6';
+      heading.textContent = 'Mapped Scribes';
+
+      mappedTableEl.insertAdjacentElement('beforebegin', heading);
+    }
     if (!filteredMappings.length) {
       tableBody.innerHTML = `
         <tr>
           <td colspan="9" class="py-8 text-center text-gray-500">
-            No mappings found. Select a Scribe and Provider above, then click "Save Assignment".
+            ${selectedScribeId ? 'No provider assigned to this scribe.' : 'No mapped assignments found.'}
           </td>
         </tr>
       `;
-      return;
+      // ✅ DO NOT return here (we still render Unmapped below)
     }
 
-    tableBody.innerHTML = filteredMappings.map((m) => {
-      const s = m.scribe || {};
-      const p = m.provider || {};
+    if (filteredMappings.length) {
+      tableBody.innerHTML = filteredMappings
+        .map((m) => {
+          const s = m.scribe || {};
+          const p = m.provider || {};
 
-      const sName = s.name || s.full_name || 'N/A';
-      const sEmail = s.email || 'N/A';
-      const sXrId = s.xrId || s.xr_id || 'N/A';
+          // ✅ Always compute ids safely (API may return flat or nested ids)
+          const effectiveScribeId =
+            s.id ?? s.user_id ?? m.scribe_user_id ?? m.scribeId ?? m.scribe_userId ?? '';
 
-      const pXrId = p.xrId || p.xr_id || 'N/A';
-      const pName = p.name || p.full_name || 'N/A';
-      const pEmail = p.email || 'N/A';
+          const effectiveProviderId =
+            p.id ?? m.provider_user_id ?? m.providerId ?? m.provider_userId ?? '';
 
-      const managerName = s.managerName || s.manager_name || 'N/A';
+          const sName = s.name || s.full_name || 'N/A';
+          const sEmail = s.email || 'N/A';
+          const sXrId = s.xrId || s.xr_id || 'N/A';
 
-      // Defaults for inline edit controls
-      const currentClinicId = p.clinic_id ?? p.clinicId ?? '';
-      const currentProviderId = p.id ?? m.provider_user_id ?? m.providerId ?? '';
+          const pXrId = p.xrId || p.xr_id || 'N/A';
+          const pName = p.name || p.full_name || 'N/A';
+          const pEmail = p.email || 'N/A';
 
-      // Clinic display text (from clinics list if available)
-      const clinicObj = (userFormDynamicOptions?.clinics || []).find(
-        (c) => String(c.id) === String(currentClinicId)
-      );
-      const clinicName =
-        clinicObj?.clinic ||
-        clinicObj?.name ||
-        p.clinic_name ||
-        p.clinicName ||
-        'N/A';
+          const managerName = s.managerName || s.manager_name || 'N/A';
 
-      const ASSIGN_USERS_SCREEN_ID = 8;
-      const canWrite = canScreen(ASSIGN_USERS_SCREEN_ID, 'write');
+          // Defaults for inline edit controls
+          const currentClinicId = p.clinic_id ?? p.clinicId ?? '';
+          const currentProviderId = effectiveProviderId;
 
-      return `
-          <tr class="table-row border-b border-gray-700"
-              data-mapping-id="${escapeHtmlInline(m.id)}"
-              data-scribe-id="${escapeHtmlInline(s.id)}"
-              data-orig-clinic-id="${escapeHtmlInline(currentClinicId)}"
-              data-orig-provider-id="${escapeHtmlInline(currentProviderId)}">
+          // Clinic display text (from clinics list if available)
+          const clinicObj = (userFormDynamicOptions?.clinics || []).find(
+            (c) => String(c.id) === String(currentClinicId)
+          );
+          const clinicName =
+            clinicObj?.clinic ||
+            clinicObj?.name ||
+            p.clinic_name ||
+            p.clinicName ||
+            'N/A';
 
-           
-            <td class="py-3">${escapeHtmlInline(sName)}</td>
+          const ASSIGN_USERS_SCREEN_ID = 8;
+          const canWrite = canScreen(ASSIGN_USERS_SCREEN_ID, 'write');
 
-            <!-- 2) Scribe Email -->
-            <td class="py-3 text-sm">${escapeHtmlInline(sEmail)}</td>
+          return `
+            <tr class="table-row border-b border-gray-700"
+                data-mapping-id="${escapeHtmlInline(m.id)}"
+                data-scribe-id="${escapeHtmlInline(effectiveScribeId)}"
+                data-orig-clinic-id="${escapeHtmlInline(currentClinicId)}"
+                data-orig-provider-id="${escapeHtmlInline(effectiveProviderId)}">
 
-            <!-- 3) Scribe XR ID -->
-            <td class="py-3">
-              <span class="px-2 py-1 text-xs rounded-full bg-blue-500 bg-opacity-20 text-blue-400">
-                ${escapeHtmlInline(sXrId)}
-              </span>
-            </td>
+              <td class="py-3">${escapeHtmlInline(sName)}</td>
 
-            <!-- 4) Provider XR ID (DISPLAY) -->
-            <td class="py-3">
-              <span class="px-2 py-1 text-xs rounded-full bg-blue-500 bg-opacity-20 text-blue-400">
-                ${escapeHtmlInline(pXrId)}
-              </span>
-            </td>
+              <!-- 2) Scribe Email -->
+              <td class="py-3 text-sm">${escapeHtmlInline(sEmail)}</td>
 
-            <!-- 5) Clinic (VIEW default, EDIT dropdown hidden) -->
-            <td class="py-3">
-              <span class="assign-view-clinic text-sm">${escapeHtmlInline(clinicName)}</span>
+              <!-- 3) Scribe XR ID -->
+              <td class="py-3">
+                <span class="px-2 py-1 text-xs rounded-full bg-blue-500 bg-opacity-20 text-blue-400">
+                  ${escapeHtmlInline(sXrId)}
+                </span>
+              </td>
 
-              <select class="assign-inline-clinic hidden px-2 py-1 rounded bg-gray-700 border border-gray-600 text-white text-xs"
-                      ${canWrite ? '' : 'disabled'}
-                      title="${canWrite ? '' : 'Read-only access'}">
-                ${buildClinicOptionsHtml(currentClinicId)}
-              </select>
-            </td>
+              <!-- 4) Provider XR ID (DISPLAY) -->
+              <td class="py-3">
+                <span class="px-2 py-1 text-xs rounded-full bg-blue-500 bg-opacity-20 text-blue-400">
+                  ${escapeHtmlInline(pXrId)}
+                </span>
+              </td>
 
-            <!-- 6) Provider Name (VIEW default, EDIT dropdown hidden) -->
-            <td class="py-3">
-              <span class="assign-view-provider">${escapeHtmlInline(pName)}</span>
+              <!-- 5) Clinic (VIEW default, EDIT dropdown hidden) -->
+              <td class="py-3">
+                <span class="assign-view-clinic text-sm">${escapeHtmlInline(clinicName)}</span>
 
-              <select class="assign-inline-provider hidden px-2 py-1 rounded bg-gray-700 border border-gray-600 text-white text-xs"
-                      ${canWrite ? '' : 'disabled'}
-                      title="${canWrite ? '' : 'Read-only access'}">
-                ${buildProviderOptionsHtml(currentClinicId, currentProviderId)}
-              </select>
-            </td>
+                <select class="assign-inline-clinic hidden px-2 py-1 rounded bg-gray-700 border border-gray-600 text-white text-xs"
+                        ${canWrite ? '' : 'disabled'}
+                        title="${canWrite ? '' : 'Read-only access'}">
+                  ${buildClinicOptionsHtml(currentClinicId)}
+                </select>
+              </td>
 
-            <!-- 7) Provider Email (DISPLAY) -->
-            <td class="py-3 text-sm">${escapeHtmlInline(pEmail)}</td>
+              <!-- 6) Provider Name (VIEW default, EDIT dropdown hidden) -->
+              <td class="py-3">
+                <span class="assign-view-provider">${escapeHtmlInline(pName)}</span>
 
-            <!-- 8) Scribe Manager -->
-            <td class="py-3 text-sm">${escapeHtmlInline(managerName)}</td>
+                <select class="assign-inline-provider hidden px-2 py-1 rounded bg-gray-700 border border-gray-600 text-white text-xs"
+                        ${canWrite ? '' : 'disabled'}
+                        title="${canWrite ? '' : 'Read-only access'}">
+                  ${buildProviderOptionsHtml(currentClinicId, currentProviderId)}
+                </select>
+              </td>
 
-            <!-- 9) Actions -->
-             <td class="py-3 text-sm whitespace-nowrap">
-  <div class="flex items-center gap-2 justify-end">
-    <button class="assign-inline-edit px-2 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs"
-            ${canWrite ? '' : 'disabled'}>
-      Edit
-    </button>
+              <!-- 7) Provider Email (DISPLAY) -->
+              <td class="py-3 text-sm">${escapeHtmlInline(pEmail)}</td>
 
-    <button class="assign-inline-save hidden px-2 py-1 rounded bg-green-600 hover:bg-green-700 text-white text-xs"
-            ${canWrite ? '' : 'disabled'}>
-      Save
-    </button>
+              <!-- 8) Scribe Manager -->
+              <td class="py-3 text-sm">${escapeHtmlInline(managerName)}</td>
 
-    <button class="assign-inline-cancel hidden px-2 py-1 rounded bg-gray-600 hover:bg-gray-700 text-white text-xs"
-            ${canWrite ? '' : 'disabled'}>
-      Cancel
-    </button>
-  </div>
-</td>
+              <!-- 9) Actions -->
+              <td class="py-3 text-sm whitespace-nowrap">
+                <div class="flex items-center gap-2 justify-end">
+                  <button class="assign-inline-edit px-2 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs"
+                          ${canWrite ? '' : 'disabled'}>
+                    Edit
+                  </button>
 
+                  <button class="assign-inline-save hidden px-2 py-1 rounded bg-green-600 hover:bg-green-700 text-white text-xs"
+                          ${canWrite ? '' : 'disabled'}>
+                    Save
+                  </button>
 
-          </tr>
-        `;
-    })
-      .join('');
+                  <button class="assign-inline-cancel hidden px-2 py-1 rounded bg-gray-600 hover:bg-gray-700 text-white text-xs"
+                          ${canWrite ? '' : 'disabled'}>
+                    Cancel
+                  </button>
+                </div>
+              </td>
+            </tr>
+          `;
+        })
+        .join('');
+    }
 
     // Avoid stacking listeners (simple guard)
     if (!tableBody.dataset.inlineEditBound) {
@@ -2826,7 +3341,9 @@ async function loadAssignUsersTable() {
           if (!row) return;
 
           // Hide view spans
-          row.querySelectorAll('.assign-view-clinic, .assign-view-provider').forEach((el) => el.classList.add('hidden'));
+          row
+            .querySelectorAll('.assign-view-clinic, .assign-view-provider')
+            .forEach((el) => el.classList.add('hidden'));
 
           // Show selects + save/cancel
           const clinicSelect = row.querySelector('.assign-inline-clinic');
@@ -2860,11 +3377,15 @@ async function loadAssignUsersTable() {
           if (providerSelect) providerSelect.innerHTML = buildProviderOptionsHtml(origClinicId, origProviderId);
 
           // Hide selects + save/cancel
-          row.querySelectorAll('.assign-inline-clinic, .assign-inline-provider, .assign-inline-save, .assign-inline-cancel')
+          row
+            .querySelectorAll(
+              '.assign-inline-clinic, .assign-inline-provider, .assign-inline-save, .assign-inline-cancel'
+            )
             .forEach((el) => el.classList.add('hidden'));
 
           // Show view spans
-          row.querySelectorAll('.assign-view-clinic, .assign-view-provider')
+          row
+            .querySelectorAll('.assign-view-clinic, .assign-view-provider')
             .forEach((el) => el.classList.remove('hidden'));
 
           // Show edit
