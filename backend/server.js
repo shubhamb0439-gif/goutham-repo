@@ -78,7 +78,7 @@ async function safeFetchSockets(io, namespace = "/") {
 
   try {
     // Short guard so device-list / identify / health never stall on a stale peer
-    const guard = new Promise((_, reject) => setTimeout(() => reject(new Error("guard-timeout")), 2500));
+    const guard = new Promise((_, reject) => setTimeout(() => reject(new Error("guard-timeouFt")), 2500));
 
     const globalSockets = await Promise.race([nsp.fetchSockets(), guard]);
 
@@ -4002,181 +4002,76 @@ app.get('/api/platform/user-hierarchy', requireSuperAdmin, async (req, res) => {
 
 
 
-// // ================== EMAIL (login user welcome) ==================
-// const { EmailClient } = require("@azure/communication-email");
-// const { DefaultAzureCredential, ClientSecretCredential } = require("@azure/identity");
-
-// const ACS_ENDPOINT = process.env.ACS_ENDPOINT;
-// const EMAIL_FROM = process.env.EMAIL_FROM || "xr@oghealthcare.com";
-// const EMAIL_REPLY_TO = process.env.EMAIL_REPLY_TO || "xr@oghealthcare.com";
-// const SENDER_NAME = process.env.SENDER_NAME || "XR Platform ";
-
-// let emailClient = null;
-
-// try {
-//   const useManagedIdentity =
-//     !!process.env.AZURE_CLIENT_ID_MI && !process.env.AZURE_CLIENT_SECRET;
-
-//   const credential = useManagedIdentity
-//     ? new DefaultAzureCredential({
-//       managedIdentityClientId: process.env.AZURE_CLIENT_ID_MI,
-//     })
-//     : new ClientSecretCredential(
-
-//       process.env.DB_TENANT_ID,
-//       process.env.DB_CLIENT_ID,
-//       process.env.DB_CLIENT_SECRET
-//     );
-
-//   if (ACS_ENDPOINT) {
-//     emailClient = new EmailClient(ACS_ENDPOINT, credential);
-//   } else {
-//     console.warn("[MAIL] ACS_ENDPOINT missing – emails skipped");
-//   }
-// } catch (e) {
-//   console.warn("[MAIL] ACS Email init failed – emails skipped", e?.message || e);
-// }
-
-// async function sendNewLoginEmail({ to, name, email, password }) {
-//   if (!emailClient) {
-//     console.warn("[MAIL] EmailClient unavailable – skip email to", to);
-//     return;
-//   }
-
-//   const subject = "Your XR Platform login details";
-
-//   const text = [
-//     `Hi ${name || "User"},`,
-//     "",
-//     "Your XR Platform login has been created.",
-//     "",
-//     "Login URL: http://localhost:8080/platform",
-//     `Email: ${email}`,
-//     `Password: ${password}`,
-//     "",
-//     "Please sign in and change your password after first login.",
-//     "",
-//     "Thanks,",
-//     "XR Platform",
-//   ].join("\n");
-
-//   const html = `
-//     <p>Hi ${name || "User"},</p>
-//     <p>Your <strong>XR Platform</strong> login has been created.</p>
-//     <p>
-//       <strong>Login URL:</strong>
-//       <a href="http://localhost:8080/platform">http://localhost:8080/platform</a><br/>
-//       <strong>Email:</strong> ${email}<br/>
-//       <strong>Password:</strong> ${password}
-//     </p>
-//     <p>Please sign in and change your password after first login.</p>
-//     <p>Thanks,<br/>XR Platform</p>
-//   `;
-
-//   try {
-//     const message = {
-//       senderAddress: EMAIL_FROM,
-//       recipients: {
-//         to: [{ address: to }],
-//       },
-//       content: {
-//         subject,
-//         plainText: text,
-//         html,
-//       },
-
-//       // ✅ THIS MAKES IT TWO-WAY
-//       replyTo: [{ address: EMAIL_REPLY_TO, displayName: SENDER_NAME }],
-//     };
-
-//     console.log("[MAIL] ACS_ENDPOINT:", ACS_ENDPOINT);
-//     console.log("[MAIL] senderAddress:", EMAIL_FROM);
-//     console.log("[MAIL] replyTo:", EMAIL_REPLY_TO);
-
-//     const poller = await emailClient.beginSend(message);
-//     await poller.pollUntilDone();
-
-//     console.log("[MAIL] Login details sent to", to);
-//   } catch (err) {
-//     console.error("[MAIL] Failed to send login email to", to);
-
-//     // ✅ print the real Azure details (does NOT change behavior)
-//     console.error("[MAIL] name:", err?.name);
-//     console.error("[MAIL] message:", err?.message);
-//     console.error("[MAIL] status:", err?.statusCode || err?.status);
-//     console.error("[MAIL] code:", err?.code);
-//     console.error("[MAIL] details:", err?.details);
-//     console.error("[MAIL] full error:", err);
-//   }
-
-// }
-
-
-
+// ================== EMAIL (login user welcome) ==================
 const { EmailClient } = require("@azure/communication-email");
-const { ClientSecretCredential } = require("@azure/identity");
+const { DefaultAzureCredential, ClientSecretCredential } = require("@azure/identity");
 
-// Load environment variables
 const ACS_ENDPOINT = process.env.ACS_ENDPOINT;
-const EMAIL_FROM = process.env.EMAIL_FROM;
+const EMAIL_FROM = process.env.EMAIL_FROM || "xr@oghealthcare.com";
+const EMAIL_REPLY_TO = process.env.EMAIL_REPLY_TO || "xr@oghealthcare.com";
+const SENDER_NAME = process.env.SENDER_NAME || "XR Platform ";
 
-// Validate required env vars
-if (!ACS_ENDPOINT || !EMAIL_FROM) {
-  throw new Error("ACS_ENDPOINT or EMAIL_FROM is missing in environment variables.");
+let emailClient = null;
+
+try {
+  const useManagedIdentity =
+    !!process.env.AZURE_CLIENT_ID_MI && !process.env.AZURE_CLIENT_SECRET;
+
+  const credential = useManagedIdentity
+    ? new DefaultAzureCredential({
+      managedIdentityClientId: process.env.AZURE_CLIENT_ID_MI,
+    })
+    : new ClientSecretCredential(
+
+      process.env.DB_TENANT_ID,
+      process.env.DB_CLIENT_ID,
+      process.env.DB_CLIENT_SECRET
+    );
+
+  if (ACS_ENDPOINT) {
+    emailClient = new EmailClient(ACS_ENDPOINT, credential);
+  } else {
+    console.warn("[MAIL] ACS_ENDPOINT missing – emails skipped");
+  }
+} catch (e) {
+  console.warn("[MAIL] ACS Email init failed – emails skipped", e?.message || e);
 }
-
-if (
-  !process.env.DB_TENANT_ID ||
-  !process.env.DB_CLIENT_ID ||
-  !process.env.DB_CLIENT_SECRET
-) {
-  throw new Error("Azure Service Principal credentials are missing.");
-}
-
-// Create credential (LOCAL → Service Principal)
-const credential = new ClientSecretCredential(
-  process.env.DB_TENANT_ID,
-  process.env.DB_CLIENT_ID,
-  process.env.DB_CLIENT_SECRET
-);
-
-// Create Email Client
-const emailClient = new EmailClient(ACS_ENDPOINT, credential);
-
-// ================= SEND MAIL FUNCTION =================
 
 async function sendNewLoginEmail({ to, name, email, password }) {
+  if (!emailClient) {
+    console.warn("[MAIL] EmailClient unavailable – skip email to", to);
+    return;
+  }
+
   const subject = "Your XR Platform login details";
 
-  const text = `
-Hi ${name || "User"},
-
-Your XR Platform login has been created.
-
-Login URL: http://localhost:8080/platform
-Email: ${email}
-Password: ${password}
-
-Please sign in and change your password after first login.
-
-Thanks,
-XR Platform
-`;
+  const text = [
+    `Hi ${name || "User"},`,
+    "",
+    "Your XR Platform login has been created.",
+    "",
+    "Login URL: http://localhost:8080/platform",
+    `Email: ${email}`,
+    `Password: ${password}`,
+    "",
+    "Please sign in and change your password after first login.",
+    "",
+    "Thanks,",
+    "XR Platform",
+  ].join("\n");
 
   const html = `
-<p>Hi ${name || "User"},</p>
-<p>Your <strong>XR Platform</strong> login has been created.</p>
-<p>
-<strong>Login URL:</strong>
-<a href="http://localhost:8080/platform">
-http://localhost:8080/platform
-</a><br/>
-<strong>Email:</strong> ${email}<br/>
-<strong>Password:</strong> ${password}
-</p>
-<p>Please sign in and change your password after first login.</p>
-<p>Thanks,<br/>XR Platform</p>
-`;
+    <p>Hi ${name || "User"},</p>
+    <p>Your <strong>XR Platform</strong> login has been created.</p>
+    <p>
+      <strong>Login URL:</strong>
+      <a href="http://localhost:8080/platform">http://localhost:8080/platform</a><br/>
+      <strong>Email:</strong> ${email}<br/>
+      <strong>Password:</strong> ${password}
+    </p>
+    <p>Please sign in and change your password after first login.</p>
+    <p>Thanks,<br/>XR Platform</p>
+  `;
 
   try {
     const message = {
@@ -4189,24 +4084,129 @@ http://localhost:8080/platform
         plainText: text,
         html,
       },
+
+      // ✅ THIS MAKES IT TWO-WAY
+      replyTo: [{ address: EMAIL_REPLY_TO, displayName: SENDER_NAME }],
     };
 
-    console.log("Sending email to:", to);
+    console.log("[MAIL] ACS_ENDPOINT:", ACS_ENDPOINT);
+    console.log("[MAIL] senderAddress:", EMAIL_FROM);
+    console.log("[MAIL] replyTo:", EMAIL_REPLY_TO);
 
     const poller = await emailClient.beginSend(message);
-    const result = await poller.pollUntilDone();
+    await poller.pollUntilDone();
 
-    console.log("✅ Email sent successfully. Message ID:", result.id);
+    console.log("[MAIL] Login details sent to", to);
   } catch (err) {
-    console.error("❌ Failed to send email");
-    console.error("Status:", err?.statusCode);
-    console.error("Code:", err?.code);
-    console.error("Message:", err?.message);
-    console.error("Full Error:", err);
+    console.error("[MAIL] Failed to send login email to", to);
+
+    // ✅ print the real Azure details (does NOT change behavior)
+    console.error("[MAIL] name:", err?.name);
+    console.error("[MAIL] message:", err?.message);
+    console.error("[MAIL] status:", err?.statusCode || err?.status);
+    console.error("[MAIL] code:", err?.code);
+    console.error("[MAIL] details:", err?.details);
+    console.error("[MAIL] full error:", err);
   }
+
 }
 
-module.exports = { sendNewLoginEmail };
+
+
+// const { EmailClient } = require("@azure/communication-email");
+// const { ClientSecretCredential } = require("@azure/identity");
+
+// // Load environment variables
+// const ACS_ENDPOINT = process.env.ACS_ENDPOINT;
+// const EMAIL_FROM = process.env.EMAIL_FROM;
+
+// // Validate required env vars
+// if (!ACS_ENDPOINT || !EMAIL_FROM) {
+//   throw new Error("ACS_ENDPOINT or EMAIL_FROM is missing in environment variables.");
+// }
+
+// if (
+//   !process.env.DB_TENANT_ID ||
+//   !process.env.DB_CLIENT_ID ||
+//   !process.env.DB_CLIENT_SECRET
+// ) {
+//   throw new Error("Azure Service Principal credentials are missing.");
+// }
+
+// // Create credential (LOCAL → Service Principal)
+// const credential = new ClientSecretCredential(
+//   process.env.DB_TENANT_ID,
+//   process.env.DB_CLIENT_ID,
+//   process.env.DB_CLIENT_SECRET
+// );
+
+// // Create Email Client
+// const emailClient = new EmailClient(ACS_ENDPOINT, credential);
+
+// // ================= SEND MAIL FUNCTION =================
+
+// async function sendNewLoginEmail({ to, name, email, password }) {
+//   const subject = "Your XR Platform login details";
+
+//   const text = `
+// Hi ${name || "User"},
+
+// Your XR Platform login has been created.
+
+// Login URL: http://localhost:8080/platform
+// Email: ${email}
+// Password: ${password}
+
+// Please sign in and change your password after first login.
+
+// Thanks,
+// XR Platform
+// `;
+
+//   const html = `
+// <p>Hi ${name || "User"},</p>
+// <p>Your <strong>XR Platform</strong> login has been created.</p>
+// <p>
+// <strong>Login URL:</strong>
+// <a href="http://localhost:8080/platform">
+// http://localhost:8080/platform
+// </a><br/>
+// <strong>Email:</strong> ${email}<br/>
+// <strong>Password:</strong> ${password}
+// </p>
+// <p>Please sign in and change your password after first login.</p>
+// <p>Thanks,<br/>XR Platform</p>
+// `;
+
+//   try {
+//     const message = {
+//       senderAddress: EMAIL_FROM,
+//       recipients: {
+//         to: [{ address: to }],
+//       },
+//       content: {
+//         subject,
+//         plainText: text,
+//         html,
+//       },
+//     };
+
+//     console.log("Sending email to:", to);
+
+//     const poller = await emailClient.beginSend(message);
+//     const result = await poller.pollUntilDone();
+
+//     console.log("✅ Email sent successfully. Message ID:", result.id);
+//   } catch (err) {
+//     console.error("❌ Failed to send email");
+//     console.error("Status:", err?.statusCode);
+//     console.error("Code:", err?.code);
+//     console.error("Message:", err?.message);
+//     console.error("Full Error:", err);
+//   }
+// }
+
+// module.exports = { sendNewLoginEmail };
 
 
 // -------------------- Create Login User (System_Users) --------------------
