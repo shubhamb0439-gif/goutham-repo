@@ -2673,6 +2673,17 @@ app.post('/api/platform/create-user', requireLogin, requireScreenWrite(6), async
 
     const clinicId = body.clinicId || body.clinic || null;
     const xrId = body.xrId || body.xr_id || null;
+    const contactNoPrimary =
+      body.contact_no_primary ||
+      body.phone ||
+      body.phoneNumber ||
+      null;
+
+    const mrnNo =
+      body.mrn_no ||
+      body.mrn ||
+      null;
+
     const primaryProviderId =
       body.primaryProviderUserId ||
       body.primaryProviderId ||
@@ -2695,30 +2706,44 @@ app.post('/api/platform/create-user', requireLogin, requireScreenWrite(6), async
       primaryProviderId
     });
 
+    // Normalize category to match Personas values
+    const normalizedCategory = String(category).toLowerCase();
+
     // --- 1. Basic validation --------------------------------------------
-    if (!category || !name || !email || !status || !password) {
+    if (
+      !category ||
+      !name ||
+      !email ||
+      !password ||
+      (normalizedCategory !== 'patient' && !status) ||
+      (normalizedCategory === 'patient' && (!contactNoPrimary || !mrnNo))
+    ) {
       return res.status(400).json({
         ok: false,
-        message: 'All fields are required'
+        message: 'Required fields are missing'
       });
     }
 
-    // Normalize category to match Personas values
-    const normalizedCategory = String(category).toLowerCase();
 
     // Personas table: 'Employee' and 'Provider'
     // For Scribe, we treat persona = 'Employee' with type = 'Scribe'
     let personaName;
     if (normalizedCategory === 'provider') {
       personaName = 'Provider';
+    } else if (normalizedCategory === 'patient') {
+      personaName = 'Patient';
     } else {
-      // Employee, Scribe, etc. → Employee persona
+      // Employee, Scribe
       personaName = 'Employee';
     }
 
+
     // If department not supplied, default sensibly
+    // ✅ Enforce: Patient MUST always be OPS (ignore any incoming department)
     const departmentName =
-      department || (normalizedCategory === 'provider' ? 'OPS' : 'IT');
+      normalizedCategory === 'patient'
+        ? 'OPS'
+        : (department || (normalizedCategory === 'provider' ? 'OPS' : 'IT'));
 
     // Decide which "type" (Types table) to use
     let typeName = type || 'Employee';
@@ -2729,7 +2754,9 @@ app.post('/api/platform/create-user', requireLogin, requireScreenWrite(6), async
       typeName = 'Employee';
     }
 
-    const statusName = status; // 'Active' / 'Inactive'
+    const statusName =
+      status || (normalizedCategory === 'patient' ? 'Active' : null);
+
 
 
     // --- 2. Look up IDs from master tables ------------------------------
@@ -2837,70 +2864,72 @@ app.post('/api/platform/create-user', requireLogin, requireScreenWrite(6), async
     const transaction = await sequelize.transaction();
 
     try {
-      // 4a) Insert into User_Role_Mapping and get id via OUTPUT
-      const roleRowsRaw = await sequelize.query(
-        `
-        INSERT INTO [dbo].[User_Role_Mapping] (
-          persona_id,
-          department_id,
-          type_id,
-          created_date,
-          created_by,
-          modified_date,
-          modified_by,
-          row_status
-        )
-        OUTPUT INSERTED.id AS id
-        VALUES (
-          :personaId,
-          :departmentId,
-          :typeId,
-          SYSDATETIME(),
-          :createdBy,
-          SYSDATETIME(),
-          :createdBy,
-          1
-        )
-        `,
-        {
-          replacements: {
-            personaId,
-            departmentId,
-            typeId,
-            createdBy: createdById
-          },
-          type: Sequelize.QueryTypes.SELECT,
-          transaction
-        }
-      );
 
-      console.log(
-        '[DEBUG] roleRowsRaw from User_Role_Mapping insert:',
-        roleRowsRaw
-      );
-
+      // 4a) Decide user_role_mapping_id
+      // ✅ Patient must ALWAYS reuse the shared mapping id = 85 (no new row in User_Role_Mapping)
       let userRoleMappingId = null;
-      if (Array.isArray(roleRowsRaw)) {
-        if (
-          roleRowsRaw.length &&
-          roleRowsRaw[0] &&
-          typeof roleRowsRaw[0].id !== 'undefined'
-        ) {
-          userRoleMappingId = roleRowsRaw[0].id;
-        } else if (
-          Array.isArray(roleRowsRaw[0]) &&
-          roleRowsRaw[0].length &&
-          roleRowsRaw[0][0] &&
-          typeof roleRowsRaw[0][0].id !== 'undefined'
-        ) {
-          userRoleMappingId = roleRowsRaw[0][0].id;
-        }
-      }
 
-      if (!userRoleMappingId) {
-        throw new Error(
-          'User_Role_Mapping insert did not return an id (check roleRowsRaw debug log)'
+      if (normalizedCategory === 'patient') {
+        userRoleMappingId = 85;
+      } else if (normalizedCategory === 'provider') {
+        userRoleMappingId = 11;
+      } else {
+
+        // Insert into User_Role_Mapping and get id via OUTPUT
+        const roleRowsRaw = await sequelize.query(
+          `
+          INSERT INTO [dbo].[User_Role_Mapping] (
+            persona_id,
+            department_id,
+            type_id,
+            created_date,
+            created_by,
+            modified_date,
+            modified_by,
+            row_status
+          )
+          OUTPUT INSERTED.id AS id
+          VALUES (
+            :personaId,
+            :departmentId,
+            :typeId,
+            SYSDATETIME(),
+            :createdBy,
+            SYSDATETIME(),
+            :createdBy,
+            1
+          )
+          `,
+          {
+            replacements: {
+              personaId,
+              departmentId,
+              typeId,
+              createdBy: createdById
+            },
+            type: Sequelize.QueryTypes.SELECT,
+            transaction
+          }
         );
+
+        console.log('[DEBUG] roleRowsRaw from User_Role_Mapping insert:', roleRowsRaw);
+
+        if (Array.isArray(roleRowsRaw)) {
+          if (roleRowsRaw.length && roleRowsRaw[0] && typeof roleRowsRaw[0].id !== 'undefined') {
+            userRoleMappingId = roleRowsRaw[0].id;
+          } else if (
+            Array.isArray(roleRowsRaw[0]) &&
+            roleRowsRaw[0].length &&
+            roleRowsRaw[0][0] &&
+            typeof roleRowsRaw[0][0].id !== 'undefined'
+          ) {
+            userRoleMappingId = roleRowsRaw[0][0].id;
+          }
+        }
+
+        if (!userRoleMappingId) {
+          throw new Error('User_Role_Mapping insert did not return an id (check roleRowsRaw debug log)');
+        }
       }
 
       // 4b) Insert into System_Users
@@ -2917,6 +2946,8 @@ app.post('/api/platform/create-user', requireLogin, requireScreenWrite(6), async
           xr_id,
           status_id,
           user_role_mapping_id,
+          contact_no_primary,
+          mrn_no,
           created_date,
           created_by,
           modified_date,
@@ -2932,6 +2963,8 @@ app.post('/api/platform/create-user', requireLogin, requireScreenWrite(6), async
           :xr_id,
           :status_id,
           :user_role_mapping_id,
+          :contact_no_primary,
+          :mrn_no,
           SYSDATETIME(),
           :created_by,
           SYSDATETIME(),
@@ -2949,6 +2982,9 @@ app.post('/api/platform/create-user', requireLogin, requireScreenWrite(6), async
             xr_id: xrId || null,
             status_id: statusId,
             user_role_mapping_id: userRoleMappingId,
+            // ✅ ADD THESE TWO LINES HERE
+            contact_no_primary: contactNoPrimary,
+            mrn_no: mrnNo,
             created_by: createdById
           },
           type: Sequelize.QueryTypes.INSERT,
@@ -3966,58 +4002,70 @@ app.get('/api/platform/user-hierarchy', requireSuperAdmin, async (req, res) => {
 
 
 
-
 // ================== EMAIL (login user welcome) ==================
-const smtpHost = process.env.SMTP_HOST;
-const smtpPort = Number(process.env.SMTP_PORT || 587);
-const smtpSecure = (process.env.SMTP_SECURE || 'false').toLowerCase() === 'true';
-const smtpUser = process.env.SMTP_USER;
-const smtpPass = process.env.SMTP_PASS;
-const emailFrom = process.env.EMAIL_FROM || smtpUser || 'no-reply@example.com';
+const { EmailClient } = require("@azure/communication-email");
+const { DefaultAzureCredential, ClientSecretCredential } = require("@azure/identity");
 
-// Create a reusable transporter (only if config is present)
-let mailTransporter = null;
-if (smtpHost && smtpUser && smtpPass) {
-  mailTransporter = nodemailer.createTransport({
-    host: smtpHost,
-    port: smtpPort,
-    secure: smtpSecure,
-    auth: {
-      user: smtpUser,
-      pass: smtpPass,
-    },
-  });
-} else {
-  console.warn('[MAIL] SMTP not fully configured – emails will be skipped');
+const ACS_ENDPOINT = process.env.ACS_ENDPOINT;
+const EMAIL_FROM = process.env.EMAIL_FROM || "xr@oghealthcare.com";
+const EMAIL_REPLY_TO = process.env.EMAIL_REPLY_TO || "xr@oghealthcare.com";
+const SENDER_NAME = process.env.SENDER_NAME || "XR Platform ";
+
+let emailClient = null;
+
+try {
+  const useManagedIdentity =
+    !!process.env.AZURE_CLIENT_ID_MI && !process.env.AZURE_CLIENT_SECRET;
+
+  const credential = useManagedIdentity
+    ? new DefaultAzureCredential({
+      managedIdentityClientId: process.env.AZURE_CLIENT_ID_MI,
+    })
+    : new ClientSecretCredential(
+
+      process.env.DB_TENANT_ID,
+      process.env.DB_CLIENT_ID,
+      process.env.DB_CLIENT_SECRET
+    );
+
+  if (ACS_ENDPOINT) {
+    emailClient = new EmailClient(ACS_ENDPOINT, credential);
+  } else {
+    console.warn("[MAIL] ACS_ENDPOINT missing – emails skipped");
+  }
+} catch (e) {
+  console.warn("[MAIL] ACS Email init failed – emails skipped", e?.message || e);
 }
 
 async function sendNewLoginEmail({ to, name, email, password }) {
-  if (!mailTransporter) {
-    console.warn('[MAIL] Transporter not available – skip sending email to', to);
+  if (!emailClient) {
+    console.warn("[MAIL] EmailClient unavailable – skip email to", to);
     return;
   }
 
-  const subject = 'Your XR Platform login details';
+  const subject = "Your XR Platform login details";
+
   const text = [
-    `Hi ${name || 'User'},`,
-    '',
-    'Your XR Platform login has been created.',
-    '',
-    `Login URL: http://localhost:8080/platform`,
+    `Hi ${name || "User"},`,
+    "",
+    "Your XR Platform login has been created.",
+    "",
+    "Login URL: http://localhost:8080/platform",
     `Email: ${email}`,
     `Password: ${password}`,
-    '',
-    'Please sign in and change your password after first login.',
-    '',
-    'Thanks,',
-    'XR Platform',
-  ].join('\n');
+    "",
+    "Please sign in and change your password after first login.",
+    "",
+    "Thanks,",
+    "XR Platform",
+  ].join("\n");
 
   const html = `
-    <p>Hi ${name || 'User'},</p>
+    <p>Hi ${name || "User"},</p>
     <p>Your <strong>XR Platform</strong> login has been created.</p>
     <p>
-      <strong>Login URL:</strong> <a href="http://localhost:8080/platform">http://localhost:8080/platform</a><br/>
+      <strong>Login URL:</strong>
+      <a href="http://localhost:8080/platform">http://localhost:8080/platform</a><br/>
       <strong>Email:</strong> ${email}<br/>
       <strong>Password:</strong> ${password}
     </p>
@@ -4026,19 +4074,139 @@ async function sendNewLoginEmail({ to, name, email, password }) {
   `;
 
   try {
-    await mailTransporter.sendMail({
-      from: emailFrom,
-      to,
-      subject,
-      text,
-      html,
-    });
-    console.log('[MAIL] Login details sent to', to);
+    const message = {
+      senderAddress: EMAIL_FROM,
+      recipients: {
+        to: [{ address: to }],
+      },
+      content: {
+        subject,
+        plainText: text,
+        html,
+      },
+
+      // ✅ THIS MAKES IT TWO-WAY
+      replyTo: [{ address: EMAIL_REPLY_TO, displayName: SENDER_NAME }],
+    };
+
+    console.log("[MAIL] ACS_ENDPOINT:", ACS_ENDPOINT);
+    console.log("[MAIL] senderAddress:", EMAIL_FROM);
+    console.log("[MAIL] replyTo:", EMAIL_REPLY_TO);
+
+    const poller = await emailClient.beginSend(message);
+    await poller.pollUntilDone();
+
+    console.log("[MAIL] Login details sent to", to);
   } catch (err) {
-    console.error('[MAIL] Failed to send login email to', to, err.message || err);
+    console.error("[MAIL] Failed to send login email to", to);
+
+    // ✅ print the real Azure details (does NOT change behavior)
+    console.error("[MAIL] name:", err?.name);
+    console.error("[MAIL] message:", err?.message);
+    console.error("[MAIL] status:", err?.statusCode || err?.status);
+    console.error("[MAIL] code:", err?.code);
+    console.error("[MAIL] details:", err?.details);
+    console.error("[MAIL] full error:", err);
   }
+
 }
 
+
+
+// const { EmailClient } = require("@azure/communication-email");
+// const { ClientSecretCredential } = require("@azure/identity");
+
+// // Load environment variables
+// const ACS_ENDPOINT = process.env.ACS_ENDPOINT;
+// const EMAIL_FROM = process.env.EMAIL_FROM;
+
+// // Validate required env vars
+// if (!ACS_ENDPOINT || !EMAIL_FROM) {
+//   throw new Error("ACS_ENDPOINT or EMAIL_FROM is missing in environment variables.");
+// }
+
+// if (
+//   !process.env.DB_TENANT_ID ||
+//   !process.env.DB_CLIENT_ID ||
+//   !process.env.DB_CLIENT_SECRET
+// ) {
+//   throw new Error("Azure Service Principal credentials are missing.");
+// }
+
+// // Create credential (LOCAL → Service Principal)
+// const credential = new ClientSecretCredential(
+//   process.env.DB_TENANT_ID,
+//   process.env.DB_CLIENT_ID,
+//   process.env.DB_CLIENT_SECRET
+// );
+
+// // Create Email Client
+// const emailClient = new EmailClient(ACS_ENDPOINT, credential);
+
+// // ================= SEND MAIL FUNCTION =================
+
+// async function sendNewLoginEmail({ to, name, email, password }) {
+//   const subject = "Your XR Platform login details";
+
+//   const text = `
+// Hi ${name || "User"},
+
+// Your XR Platform login has been created.
+
+// Login URL: http://localhost:8080/platform
+// Email: ${email}
+// Password: ${password}
+
+// Please sign in and change your password after first login.
+
+// Thanks,
+// XR Platform
+// `;
+
+//   const html = `
+// <p>Hi ${name || "User"},</p>
+// <p>Your <strong>XR Platform</strong> login has been created.</p>
+// <p>
+// <strong>Login URL:</strong>
+// <a href="http://localhost:8080/platform">
+// http://localhost:8080/platform
+// </a><br/>
+// <strong>Email:</strong> ${email}<br/>
+// <strong>Password:</strong> ${password}
+// </p>
+// <p>Please sign in and change your password after first login.</p>
+// <p>Thanks,<br/>XR Platform</p>
+// `;
+
+//   try {
+//     const message = {
+//       senderAddress: EMAIL_FROM,
+//       recipients: {
+//         to: [{ address: to }],
+//       },
+//       content: {
+//         subject,
+//         plainText: text,
+//         html,
+//       },
+//     };
+
+//     console.log("Sending email to:", to);
+
+//     const poller = await emailClient.beginSend(message);
+//     const result = await poller.pollUntilDone();
+
+//     console.log("✅ Email sent successfully. Message ID:", result.id);
+//   } catch (err) {
+//     console.error("❌ Failed to send email");
+//     console.error("Status:", err?.statusCode);
+//     console.error("Code:", err?.code);
+//     console.error("Message:", err?.message);
+//     console.error("Full Error:", err);
+//   }
+// }
+
+// module.exports = { sendNewLoginEmail };
 
 
 // -------------------- Create Login User (System_Users) --------------------
