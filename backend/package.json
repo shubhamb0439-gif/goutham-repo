@@ -7,8 +7,6 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "@azure/communication-email": "^1.1.0",
-    "@azure/identity": "^4.13.0",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@socket.io/redis-adapter": "^8.3.0",
     "axios": "^1.12.2",
