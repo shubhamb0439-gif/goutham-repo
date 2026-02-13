@@ -37,6 +37,7 @@ const USER_CATEGORY = {
   PROVIDER: 'provider',
   SCRIBE: 'scribe',
   EMPLOYEE: 'employee',
+  PATIENT: 'patient',
 };
 
 // These will later be filled from API (clinics, rights, managers, etc.)
@@ -199,6 +200,44 @@ const baseCategoryConfig = {
       { name: 'reportingManagerId', label: 'Reporting Manager', type: 'select', optionsKey: 'managers', conditional: true }
     ]
   }
+
+  ,
+
+  [USER_CATEGORY.PATIENT]: {
+    label: 'Patient',
+    formFields: [
+      { name: 'name', label: 'Full Name', type: 'text', required: true },
+
+      { name: 'email', label: 'Email', type: 'email', required: true },
+
+      {
+        name: 'contact_no_primary',
+        label: 'Phone Number',
+        type: 'text',
+        required: true
+      },
+
+      {
+        name: 'mrn_no',
+        label: 'MRN Number',
+        type: 'text',
+        required: true
+      },
+
+      {
+        name: 'password',
+        label: 'Password',
+        type: 'password',
+        required: true
+      }
+
+      // 🚫 No clinic
+      // 🚫 No XR ID
+      // 🚫 No reporting manager
+      // 🚫 No screen access
+    ]
+  }
+
 };
 
 // Helper: normalise currentUser.role
@@ -2631,7 +2670,7 @@ if (createUserForm && userCategorySelect && userFormDynamicFields) {
     });
 
     // NEW: after fields are created, wire up dynamic Primary Provider dropdown
-    if (category !== USER_CATEGORY.SCRIBE) {
+    if (category === USER_CATEGORY.SCRIBE) {
       setupScribeProviderBehaviour(category);
     }
 
@@ -2761,6 +2800,7 @@ if (createUserForm && userCategorySelect && userFormDynamicFields) {
       [USER_CATEGORY.PROVIDER]: 'Provider',
       [USER_CATEGORY.SCRIBE]: 'Scribe',
       [USER_CATEGORY.EMPLOYEE]: 'Employee',
+      [USER_CATEGORY.PATIENT]: 'Patient', // ✅ ADD THIS
     };
     userData.userType = userTypeMap[category];
 
