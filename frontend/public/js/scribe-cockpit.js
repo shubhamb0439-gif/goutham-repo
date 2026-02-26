@@ -91,6 +91,7 @@
 
     // transcript incremental state
     transcriptState: { byKey: {} },
+    transcriptSequence: 0,
 
     // active transcript
     currentActiveItemId: null,
@@ -110,6 +111,10 @@
 
     // FIFO queue: soap_note_console -> transcript item
     pendingSoapItemQueue: [],
+
+    // Template keywords mapping
+    templateKeywords: new Map(),
+    templatesLoaded: false,
 
     // total edits badge
     totalEditsBadgeEl: null,
@@ -752,6 +757,7 @@
     let changed = false;
 
     for (const item of hist) {
+      // Migrate old note formats to new format
       if (!item.note) {
         if (item.notes?.default || item.soap) {
           item.note = {
@@ -763,13 +769,12 @@
           const firstKey = Object.keys(item.notes.templates)[0];
           item.note = { templateId: String(firstKey), data: item.notes.templates[firstKey] || {} };
           changed = true;
-        } else {
-          item.note = { templateId: CONFIG.SOAP_NOTE_TEMPLATE_ID, data: {} };
-          changed = true;
         }
+        // Don't create empty note objects - let them remain null
       }
 
-      if (item.note) {
+      // Normalize template ID if note exists
+      if (item.note && item.note.data && Object.keys(item.note.data).length > 0) {
         const tid = String(item.note.templateId ?? '').trim();
         if (!tid || tid === 'default') {
           item.note.templateId = CONFIG.SOAP_NOTE_TEMPLATE_ID;
@@ -777,6 +782,7 @@
         }
       }
 
+      // Clean up old note properties
       if (item.notes || item.soap || item.activeTemplateId) {
         delete item.notes;
         delete item.soap;
@@ -803,7 +809,7 @@
   }
 
   function getActiveNoteForItem(item) {
-    return item?.note?.data || {};
+    return item?.note || null;
   }
 
   function getActiveTemplateIdForItem(item) {
@@ -830,7 +836,16 @@
   function syncDropdownToActiveTranscript() {
     if (!dom.templateSelect) return;
     const { item } = getActiveHistoryContext();
-    setTemplateSelectValue(getActiveTemplateIdForItem(item));
+
+    // If the item has a note with data, show the template ID
+    // Otherwise, show the placeholder "Select note type..."
+    const existingNote = getActiveNoteForItem(item);
+    if (existingNote && existingNote.data && Object.keys(existingNote.data).length > 0) {
+      setTemplateSelectValue(getActiveTemplateIdForItem(item));
+    } else {
+      // Reset to placeholder
+      dom.templateSelect.value = '';
+    }
   }
 
   // =============================================================================
@@ -912,7 +927,7 @@
       state.soapGenerating = false;
       stopSoapGenerationTimer();
       renderSoapBlank();
-      if (dom.templateSelect) setTemplateSelectValue(CONFIG.SOAP_NOTE_TEMPLATE_ID);
+      if (dom.templateSelect) dom.templateSelect.value = '';
       clearAiDiagnosisPaneUi();
       return;
     }
@@ -925,6 +940,24 @@
       highlightActiveCard();
       renderAiDiagnosisUi(null);
     }
+  }
+
+  function renderTranscriptList(items) {
+    if (!dom.transcript) return;
+
+    dom.transcript.innerHTML = '';
+
+    if (!items || items.length === 0) {
+      ensureTranscriptPlaceholder();
+      return;
+    }
+
+    items.forEach(item => {
+      dom.transcript.appendChild(createTranscriptCard(item));
+    });
+
+    trimTranscriptIfNeeded();
+    dom.transcript.scrollTop = dom.transcript.scrollHeight;
   }
 
   function createTranscriptCard(item) {
@@ -979,21 +1012,75 @@
     // clear cross-item error so it doesn't block viewing cached results elsewhere
     state.aiDiagnosisLastError = null;
 
-    const ctx = getActiveHistoryContext();
-    state.latestSoapNote = getActiveNoteForItem(ctx.item) || loadLatestSoap() || {};
-    if (!state.soapGenerating) renderSoapNote(state.latestSoapNote);
+    // Reset EHR to search state when switching transcriptions
+    resetEHRToSearchState();
 
-    syncDropdownToActiveTranscript();
-    renderAiDiagnosisUi(null);
+    const ctx = getActiveHistoryContext();
+    const existingNote = getActiveNoteForItem(ctx.item);
+
+    if (existingNote && existingNote.data && Object.keys(existingNote.data).length > 0) {
+      // Note already exists for this transcript - show it
+      state.latestSoapNote = existingNote.data;
+      if (!state.soapGenerating) renderSoapNote(state.latestSoapNote);
+      syncDropdownToActiveTranscript();
+      renderAiDiagnosisUi(null);
+    } else {
+      // No note generated yet - show blank state with prompt
+      state.latestSoapNote = {};
+      renderSoapBlank();
+      syncDropdownToActiveTranscript();
+      clearAiDiagnosisPaneUi();
+    }
   }
 
-  function appendTranscriptItem({ from, to, text, timestamp }) {
+  // Auto-detect note type and MRN from transcript text
+  function autoDetectFromTranscript(text) {
+    const textLower = text.toLowerCase();
+    const result = {
+      noteType: null,
+      mrn: null
+    };
+
+    const matchedTemplate = matchTemplateByKeywords(text);
+    if (matchedTemplate) {
+      result.noteType = matchedTemplate;
+    } else if (textLower.includes('soap note') || textLower.includes('soap-note')) {
+      result.noteType = CONFIG.SOAP_NOTE_TEMPLATE_ID;
+    }
+
+    // Detect MRN - look for patterns like "MRN 12345" or "MRN: 12345" or "medical record number 12345"
+    const mrnPatterns = [
+      /\bm\.?r\.?n\.?\s*:?\s*([a-z0-9]+)/i,
+      /\bmedical\s+record\s+number\s*:?\s*([a-z0-9]+)/i,
+      /\bpatient\s+id\s*:?\s*([a-z0-9]+)/i
+    ];
+
+    for (const pattern of mrnPatterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        let detectedMrn = match[1].trim().toUpperCase();
+
+        // Convert to MRNAB123 format if it's just a number
+        if (/^\d+$/.test(detectedMrn)) {
+          result.mrn = `MRNAB${detectedMrn}`;
+        } else if (!detectedMrn.startsWith('MRN')) {
+          // If it has letters but doesn't start with MRN, add MRNAB prefix
+          result.mrn = `MRNAB${detectedMrn}`;
+        } else {
+          // Already has MRN prefix or is in correct format
+          result.mrn = detectedMrn;
+        }
+        break;
+      }
+    }
+
+    return result;
+  }
+
+  function appendTranscriptItem({ from, to, text, timestamp, sequence }) {
     if (!dom.transcript || !text) return;
 
     removeTranscriptPlaceholder();
-
-    // Use the currently selected template ID from the dropdown
-    const selectedTemplateId = dom.templateSelect?.value || CONFIG.SOAP_NOTE_TEMPLATE_ID;
 
     const item = {
       id: uid(),
@@ -1001,21 +1088,45 @@
       to: to || 'Unknown',
       text: String(text || '').trim(),
       timestamp: timestamp || Date.now(),
-      note: { templateId: selectedTemplateId, data: {} },
+      sequence: sequence || 0,
+      note: null,
     };
 
     const hist = normalizeHistoryItems(loadHistory());
     hist.push(item);
+    hist.sort((a, b) => {
+      const seqA = a.sequence || 0;
+      const seqB = b.sequence || 0;
+      if (seqA !== seqB) return seqA - seqB;
+      return (a.timestamp || 0) - (b.timestamp || 0);
+    });
     saveHistory(hist);
 
-    dom.transcript.appendChild(createTranscriptCard(item));
-    trimTranscriptIfNeeded();
-    dom.transcript.scrollTop = dom.transcript.scrollHeight;
+    renderTranscriptList(hist);
 
     setActiveTranscriptId(item.id);
 
-    // Automatically generate note using the selected template
-    requestNoteGenerationForActiveTranscript(selectedTemplateId);
+    const detected = autoDetectFromTranscript(text);
+
+    if (detected.noteType && dom.templateSelect) {
+      dom.templateSelect.value = detected.noteType;
+      // Trigger change event to generate note
+      dom.templateSelect.dispatchEvent(new Event('change'));
+    } else {
+      // Don't automatically generate note - user must select template first
+      // Clear the SOAP note area and show a prompt
+      renderSoapBlank();
+      clearAiDiagnosisPaneUi();
+    }
+
+    // Auto-search MRN if detected
+    if (detected.mrn && dom.mrnInput) {
+      dom.mrnInput.value = detected.mrn;
+      // Trigger the search
+      if (dom.mrnSearchButton) {
+        dom.mrnSearchButton.click();
+      }
+    }
   }
 
   // =============================================================================
@@ -1066,7 +1177,34 @@
   }
 
   function renderSoapBlank() {
-    soapContainerEnsure().innerHTML = '';
+    const scroller = soapContainerEnsure();
+    scroller.innerHTML = `
+      <div style="
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        min-height: 300px;
+        padding: 40px 20px;
+        text-align: center;
+        color: #9ca3af;
+      ">
+        <div style="font-size: 48px; margin-bottom: 16px;">📝</div>
+        <div style="font-size: 18px; font-weight: 600; margin-bottom: 8px; color: #e5e7eb;">
+          No Note Generated
+        </div>
+        <div style="font-size: 14px; max-width: 400px; line-height: 1.6;">
+          Select a note type from the dropdown above to generate a note for this transcription.
+        </div>
+      </div>
+    `;
+
+    // Disable Add to EHR button when no note is generated
+    if (dom.btnAddEhr) {
+      dom.btnAddEhr.disabled = true;
+      dom.btnAddEhr.classList.add('scribe-add-ehr-disabled');
+    }
   }
 
   function ensureTopHeadingBadge() {
@@ -2109,6 +2247,14 @@
 
     const usable = isUsableDiagnosis(diag);
 
+    // Check if there's enough data (note sections OR summary) to enable button
+    const noteWrapper = getActiveNoteForItem(item);
+    const note = noteWrapper?.data || {};
+    const noteSections = buildNoteSectionsPayload(note);
+    const mrn = String(state.currentPatient?.mrn_no || '').trim() || null;
+    const summaryText = mrn ? getCachedSummaryTextForMrn(mrn) : '';
+    const hasEnoughData = noteSections.length > 0 || summaryText.trim().length > 0;
+
     if (btn) {
       if (inFlightForThis) {
         btn.textContent = 'Generating...';
@@ -2117,8 +2263,8 @@
         setAiDiagnosisButtonVisual(btn, 'generating');
       } else {
         btn.textContent = 'Generate';
-        btn.disabled = false;
-        btn.onclick = () => generateAiDiagnosisForActiveTranscript();
+        btn.disabled = !hasEnoughData;
+        btn.onclick = hasEnoughData ? () => generateAiDiagnosisForActiveTranscript() : null;
         setAiDiagnosisButtonVisual(btn, 'generate');
       }
     }
@@ -2181,6 +2327,14 @@
 
     const usable = isUsableDiagnosis(diag);
 
+    // Check if there's enough data (note sections OR summary) to enable button
+    const noteWrapper = getActiveNoteForItem(item);
+    const note = noteWrapper?.data || {};
+    const noteSections = buildNoteSectionsPayload(note);
+    const mrn = String(state.currentPatient?.mrn_no || '').trim() || null;
+    const summaryText = mrn ? getCachedSummaryTextForMrn(mrn) : '';
+    const hasEnoughData = noteSections.length > 0 || summaryText.trim().length > 0;
+
     if (inFlightForThis) {
       btn.textContent = 'Generating…';
       btn.disabled = true;
@@ -2191,9 +2345,9 @@
       setAiDiagnosisButtonVisual(btn, 'generated');
     } else {
       btn.textContent = 'Generate';
-      btn.disabled = false;
+      btn.disabled = !hasEnoughData;
       setAiDiagnosisButtonVisual(btn, 'generate');
-      btn.onclick = () => generateAiDiagnosisForActiveTranscript();
+      btn.onclick = hasEnoughData ? () => generateAiDiagnosisForActiveTranscript() : null;
     }
 
     head.appendChild(h);
@@ -2303,13 +2457,14 @@
       clearAiDiagnosisForHistoryItemTemplate(item.id, templateId);
     }
 
-    const note = getActiveNoteForItem(item) || {};
+    const noteWrapper = getActiveNoteForItem(item);
+    const note = noteWrapper?.data || {};
     const noteSections = buildNoteSectionsPayload(note);
 
     const mrn = String(state.currentPatient?.mrn_no || '').trim() || null;
     const summaryText = mrn ? getCachedSummaryTextForMrn(mrn) : '';
 
-    if (!noteSections.length || !summaryText) {
+    if (!noteSections.length && !summaryText) {
       state.aiDiagnosisLastError = 'AI does not have enough data to provide diagnosis.';
       renderAiDiagnosisUi(null);
       return;
@@ -2537,6 +2692,14 @@
 
     dom.templateSelect.innerHTML = '';
 
+    // Add placeholder option
+    const optPlaceholder = document.createElement('option');
+    optPlaceholder.value = '';
+    optPlaceholder.textContent = 'Select note type...';
+    optPlaceholder.disabled = true;
+    optPlaceholder.selected = true;
+    dom.templateSelect.appendChild(optPlaceholder);
+
     const optSoap = document.createElement('option');
     optSoap.value = CONFIG.SOAP_NOTE_TEMPLATE_ID;
     optSoap.textContent = 'SOAP Note';
@@ -2547,6 +2710,9 @@
       if (resp.ok) {
         const data = await resp.json();
         const templates = data.templates || [];
+
+        state.templateKeywords.clear();
+
         templates.forEach((t) => {
           const id = String(t.id);
           const exists = Array.from(dom.templateSelect.options).some((o) => o.value === id);
@@ -2556,7 +2722,17 @@
           opt.value = id;
           opt.textContent = t.name || t.short_name || `Template ${t.id}`;
           dom.templateSelect.appendChild(opt);
+
+          const keywords = [];
+          if (t.name) keywords.push(t.name);
+          if (t.short_name && t.short_name !== t.name) keywords.push(t.short_name);
+          if (keywords.length > 0) {
+            state.templateKeywords.set(id, keywords);
+          }
         });
+
+        state.templateKeywords.set(CONFIG.SOAP_NOTE_TEMPLATE_ID, ['soap note', 'soap', 'subjective objective assessment plan']);
+        state.templatesLoaded = true;
       }
     } catch {
       // ignore
@@ -2565,8 +2741,12 @@
     syncDropdownToActiveTranscript();
 
     dom.templateSelect.onchange = () => {
-      state.templateSelected = true;
-      applyTemplateToActiveTranscript(dom.templateSelect.value || CONFIG.SOAP_NOTE_TEMPLATE_ID);
+      // When user selects a template, generate the note for the active transcript
+      const ctx = getActiveHistoryContext();
+      if (!ctx.item) return;
+
+      const selectedTemplateId = dom.templateSelect.value || CONFIG.SOAP_NOTE_TEMPLATE_ID;
+      applyTemplateToActiveTranscript(selectedTemplateId);
     };
   }
 
@@ -2712,6 +2892,23 @@
     return prev + next.slice(k);
   }
 
+  function matchTemplateByKeywords(text) {
+    if (!text || state.templateKeywords.size === 0) return null;
+
+    const normalizedText = text.toLowerCase().trim();
+
+    for (const [templateId, keywords] of state.templateKeywords.entries()) {
+      for (const keyword of keywords) {
+        const normalizedKeyword = keyword.toLowerCase().trim();
+        if (normalizedText.includes(normalizedKeyword)) {
+          return templateId;
+        }
+      }
+    }
+
+    return null;
+  }
+
   function ingestDrugAvailabilityPayload(payload) {
     const arr = Array.isArray(payload) ? payload : payload ? [payload] : [];
 
@@ -2788,35 +2985,15 @@
     }
 
     if (packet.type === 'transcript_console') {
-      if (!state.templateSelected) {
-        showTemplateSelectionModal();
-        return;
-      }
-
       const p = packet.data || {};
       const { from, to, text = '', final = false, timestamp } = p;
 
-      const key = transcriptKey(from, to);
-      const slot =
-        (state.transcriptState.byKey[key] ||= { partial: '', paragraph: '', flushTimer: null });
-
-      if (!final) {
-        slot.partial = text;
+      if (!final || !text) {
         return;
       }
 
-      const mergedFinal = mergeIncremental(slot.partial, text);
-      slot.partial = '';
-      slot.paragraph = mergeIncremental(slot.paragraph ? slot.paragraph + ' ' : '', mergedFinal);
-
-      if (slot.flushTimer) clearTimeout(slot.flushTimer);
-      slot.flushTimer = setTimeout(() => {
-        if (slot.paragraph) {
-          appendTranscriptItem({ from, to, text: slot.paragraph, timestamp });
-          slot.paragraph = '';
-        }
-        slot.flushTimer = null;
-      }, CONFIG.TRANSCRIPT_FLUSH_MS);
+      const sequence = ++state.transcriptSequence;
+      appendTranscriptItem({ from, to, text: text.trim(), timestamp, sequence });
 
       return;
     }
@@ -2940,7 +3117,7 @@
     state.latestSoapNote = {};
 
     renderSoapBlank();
-    if (dom.templateSelect) setTemplateSelectValue(CONFIG.SOAP_NOTE_TEMPLATE_ID);
+    if (dom.templateSelect) dom.templateSelect.value = '';
 
     state.medAvailability.clear();
     state.medicationValidationPending = false;
@@ -3068,6 +3245,49 @@
         resolve();
       });
 
+      state.socket.on('audio_playback_complete', (data) => {
+        console.log('[SCRIBE] Audio playback complete notification received:', data);
+        const speakerBtn = document.getElementById('speakerBtn');
+        if (speakerBtn) {
+          speakerBtn.disabled = false;
+          speakerBtn.style.opacity = '1';
+          speakerBtn.innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+            </svg>
+            Generate Audio
+          `;
+          console.log('[SCRIBE] Speaker button reset to "Generate Audio"');
+        }
+      });
+
+      state.socket.on('audio_state_changed', (data) => {
+        console.log('[SCRIBE] Audio state changed notification received:', data);
+        const speakerBtn = document.getElementById('speakerBtn');
+        if (!speakerBtn) return;
+
+        if (data.state === 'playing') {
+          speakerBtn.innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="6" y="4" width="4" height="16"></rect>
+              <rect x="14" y="4" width="4" height="16"></rect>
+            </svg>
+            Playing
+          `;
+          console.log('[SCRIBE] Speaker button updated to "Playing"');
+        } else if (data.state === 'paused') {
+          speakerBtn.innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+            Play
+          `;
+          console.log('[SCRIBE] Speaker button updated to "Play"');
+        }
+      });
+
       state.socket.on('disconnect', () => {
         const prevRoom = state.currentRoom;
         state.currentRoom = null;
@@ -3100,7 +3320,8 @@
     ensureTopHeadingBadge();
 
     const ctx = getActiveHistoryContext();
-    state.latestSoapNote = getActiveNoteForItem(ctx.item) || loadLatestSoap() || {};
+    const noteWrapper = getActiveNoteForItem(ctx.item);
+    state.latestSoapNote = noteWrapper?.data || loadLatestSoap() || {};
 
     if (!hist.length) {
       renderSoapBlank();
@@ -3286,7 +3507,8 @@
     if (isTemplateDrivenNoteEligible(stored)) return stored;
 
     const ctx = getActiveHistoryContext();
-    return getActiveNoteForItem(ctx.item) || {};
+    const noteWrapper = getActiveNoteForItem(ctx.item);
+    return noteWrapper?.data || {};
   }
 
   function buildTemplateEhrSavePayload({ patientId, doctorId, scribeId, modifiedBy, timestamp, note }) {
@@ -3355,7 +3577,7 @@
       state.latestSoapNote = {};
       saveLatestSoap(state.latestSoapNote);
       renderSoapBlank();
-      setTemplateSelectValue(CONFIG.SOAP_NOTE_TEMPLATE_ID);
+      if (dom.templateSelect) dom.templateSelect.value = '';
       clearAiDiagnosisPaneUi();
       return;
     }
@@ -3374,13 +3596,14 @@
 
     const ctx = getActiveHistoryContext();
     if (ctx.item) {
-      state.latestSoapNote = getActiveNoteForItem(ctx.item) || {};
+      const noteWrapper = getActiveNoteForItem(ctx.item);
+      state.latestSoapNote = noteWrapper?.data || {};
       saveLatestSoap(state.latestSoapNote);
       renderSoapNote(state.latestSoapNote);
       syncDropdownToActiveTranscript();
     } else {
       renderSoapBlank();
-      setTemplateSelectValue(CONFIG.SOAP_NOTE_TEMPLATE_ID);
+      if (dom.templateSelect) dom.templateSelect.value = '';
       clearAiDiagnosisPaneUi();
     }
   }
@@ -3544,6 +3767,36 @@
     } catch {
       // ignore
     }
+  }
+
+  function resetEHRToSearchState() {
+    if (!dom.ehrSidebar || !dom.ehrOverlay) return;
+
+    // stop any running summary UI updates
+    try { stopSummaryTimer(); } catch { }
+    try {
+      if (state.summaryRefreshDebounce) {
+        clearTimeout(state.summaryRefreshDebounce);
+        state.summaryRefreshDebounce = null;
+      }
+    } catch { }
+
+    // clear runtime caches/state
+    state.currentPatient = null;
+    state.currentNotes = [];
+    state.noteCache.clear();
+
+    // UI back to "Enter MRN" but keep sidebar open if it was already open
+    if (dom.ehrInitialState) dom.ehrInitialState.style.display = 'flex';
+    if (dom.ehrPatientState) dom.ehrPatientState.style.display = 'none';
+
+    if (dom.mrnInput) dom.mrnInput.value = '';
+    if (dom.ehrError) {
+      dom.ehrError.textContent = '';
+      dom.ehrError.style.display = 'none';
+    }
+    if (dom.notesList) dom.notesList.innerHTML = '';
+    if (dom.noteDetail) dom.noteDetail.innerHTML = '';
   }
 
   function resetEHRState() {
@@ -3716,8 +3969,33 @@
           color:#FFFFFF;
           background:transparent;
           border-bottom:none;
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          gap:12px;
         ">
           ${escapeHtmlEhr(title || 'AI Summary Note')}
+          <button id="speakerBtn" style="
+            background:#6366f1;
+            border:none;
+            border-radius:8px;
+            color:#fff;
+            cursor:pointer;
+            padding:8px 12px;
+            font-size:14px;
+            font-weight:600;
+            display:flex;
+            align-items:center;
+            gap:6px;
+            transition:background 0.2s;
+          " title="Play summary audio on device">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+            </svg>
+            Play
+          </button>
         </div>
 
         <div style="
@@ -3742,6 +4020,113 @@
         </div>
       </div>
     `;
+
+    const speakerBtn = document.getElementById('speakerBtn');
+    if (speakerBtn) {
+      speakerBtn.onmouseover = () => speakerBtn.style.background = '#4f46e5';
+      speakerBtn.onmouseout = () => speakerBtn.style.background = '#6366f1';
+      speakerBtn.onclick = () => playSummaryAudio(raw);
+    }
+  }
+
+  async function playSummaryAudio(text) {
+    console.log('[playSummaryAudio] Received input type:', typeof text);
+    console.log('[playSummaryAudio] Received input:', text);
+
+    let textToSend = text;
+
+    if (typeof text === 'object' && text !== null) {
+      console.log('[playSummaryAudio] Input is object, extracting text property');
+      textToSend = text.text || text.content || JSON.stringify(text);
+    }
+
+    textToSend = String(textToSend || '').trim();
+    console.log('[playSummaryAudio] Final text to send:', textToSend.substring(0, 100) + '...');
+
+    if (!textToSend) {
+      if (typeof Swal !== 'undefined') {
+        Swal.fire({ icon: 'error', title: 'No Content', text: 'No summary text available to play.' });
+      } else {
+        alert('No summary text available to play.');
+      }
+      return;
+    }
+
+    const speakerBtn = document.getElementById('speakerBtn');
+    if (speakerBtn) {
+      speakerBtn.disabled = true;
+      speakerBtn.style.opacity = '0.6';
+      speakerBtn.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polyline points="12 6 12 12 16 14"></polyline>
+        </svg>
+        Generating...
+      `;
+    }
+
+    try {
+      const res = await fetch(`${state.SERVER_URL}/ehr/ai/text-to-speech`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: textToSend })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Failed to generate audio');
+
+      if (state.socket && state.socket.connected) {
+        console.log('[TTS] 🎵 Emitting play_audio_on_device to room:', state.currentRoom, 'audio size:', data.audio?.length);
+        console.log('[TTS] 🎵 Socket ID:', state.socket.id, 'Connected:', state.socket.connected);
+        console.log('[TTS] 🎵 Room members count:', state.roomMembers?.length || 0);
+
+        // Update button to "Playing" state
+        if (speakerBtn) {
+          speakerBtn.innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+            </svg>
+            Playing
+          `;
+        }
+
+        state.socket.emit('play_audio_on_device', {
+          audio: data.audio,
+          contentType: data.contentType || 'audio/mpeg',
+          room: state.currentRoom
+        });
+
+        console.log('[TTS] ✅ Event emitted successfully');
+
+        if (typeof Swal !== 'undefined') {
+          Swal.fire({ icon: 'success', title: 'Audio Sent', text: 'Audio is now playing on the device.', timer: 2000 });
+        }
+      } else {
+        throw new Error('Not connected to server');
+      }
+    } catch (err) {
+      console.error('[TTS] Error:', err);
+      if (typeof Swal !== 'undefined') {
+        Swal.fire({ icon: 'error', title: 'Audio Error', text: err.message || 'Failed to generate or play audio.' });
+      } else {
+        alert(err.message || 'Failed to generate or play audio.');
+      }
+      // Reset button on error
+      if (speakerBtn) {
+        speakerBtn.disabled = false;
+        speakerBtn.style.opacity = '1';
+        speakerBtn.innerHTML = `
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+          </svg>
+          Play
+        `;
+      }
+    }
   }
 
   async function loadSummary() {
@@ -4032,9 +4417,9 @@
       });
 
       await initTemplateDropdown();
-      setTemplateSelectValue(getActiveTemplateIdForItem(getActiveHistoryContext().item));
 
-      showTemplateSelectionModal();
+      // Don't show template selection modal on startup
+      // User will select template when they click on a transcription
 
       renderAiDiagnosisUi(null);
     } catch (e) {

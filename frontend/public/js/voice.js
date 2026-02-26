@@ -147,20 +147,25 @@ export class VoiceController {
       const now = Date.now();
       if (now - this._lastPartialAt >= this.partialThrottleMs) {
         this._lastPartialAt = now;
+        // Apply MRN formatting to interim transcripts
+        const formattedInterim = this._formatMRN(interim);
         if (this._noteMode) {
           // Note mode buffers partials locally, still notify UI
-          this.onTranscript(interim, false);
+          this.onTranscript(formattedInterim, false);
         } else {
-          this.onTranscript(interim, false);
+          this.onTranscript(formattedInterim, false);
         }
       }
     }
 
     if (finalTxt) {
+      // Apply MRN formatting to final transcript
+      const formattedFinal = this._formatMRN(finalTxt);
+
       // If in note mode, buffer AND do not treat as a command
       if (this._noteMode) {
-        this._noteBuffer += (this._noteBuffer ? ' ' : '') + finalTxt;
-        this.onTranscript(finalTxt, true);
+        this._noteBuffer += (this._noteBuffer ? ' ' : '') + formattedFinal;
+        this.onTranscript(formattedFinal, true);
         // "create" stops note mode
         if (/\bcreate\b/.test(finalTxt)) {
           this._emitStopNote(); // includes final note buffer
@@ -171,10 +176,10 @@ export class VoiceController {
       // Normal command mode
       const action = this._parseCommand(finalTxt);
       if (action) {
-        this.onCommand(action, finalTxt);
+        this.onCommand(action, formattedFinal);
       } else {
         // Deliver final transcript even if no command matched
-        this.onTranscript(finalTxt, true);
+        this.onTranscript(formattedFinal, true);
       }
     }
   }
@@ -203,6 +208,45 @@ export class VoiceController {
     if (!e) return 'speech_error';
     if (typeof e === 'string') return e;
     return e.message || e.name || 'speech_error';
+  }
+
+  /**
+   * Format MRN numbers in transcript text
+   * Converts spoken MRN patterns to formatted MRN-XXXXXX format
+   * Examples: "mrn aba 121" -> "MRN-ABA121"
+   *           "m r n zero zero zero one a b c" -> "MRN-0001ABC"
+   */
+  _formatMRN(text) {
+    if (!text) return text;
+
+    // Pattern 1: "mrn" or "m r n" followed by alphanumeric characters with spaces/dashes
+    // Captures: mrn aba 121, m r n zero zero zero one a b c, etc.
+    let formatted = text.replace(
+      /\b(m\s*r\s*n|mrn)[\s\-]*([\da-z]+(?:[\s\-]+[\da-z]+)*)\b/gi,
+      (match, prefix, code) => {
+        // Remove all spaces and dashes from the code part
+        const cleanCode = code.replace(/[\s\-]+/g, '').toUpperCase();
+        return `MRN-${cleanCode}`;
+      }
+    );
+
+    // Pattern 2: Handle spelled out numbers (zero, one, two, etc.)
+    const numberWords = {
+      'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4',
+      'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9'
+    };
+
+    // Convert number words within MRN codes
+    formatted = formatted.replace(/MRN-([A-Z0-9\s]+)/gi, (match, code) => {
+      let processedCode = code;
+      Object.entries(numberWords).forEach(([word, digit]) => {
+        const regex = new RegExp(word, 'gi');
+        processedCode = processedCode.replace(regex, digit);
+      });
+      return `MRN-${processedCode.replace(/\s+/g, '')}`;
+    });
+
+    return formatted;
   }
 
   _emitStartNote() {

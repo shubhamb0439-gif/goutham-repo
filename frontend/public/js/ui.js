@@ -198,6 +198,14 @@ let videoVisible = true;
 let isListening = false;
 let lastRecognizedCommand = '';
 
+// Audio playback state
+let currentAudio = null;
+let currentAudioUrl = null;
+let isAudioPlaying = false;
+let isAudioPaused = false;
+let audioTimeoutId = null;
+const AUDIO_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
 let connectedDesktops = []; // XR IDs
 let hadDesktops = false;
 let pairedDesktopId = null; // Option B: set from room_joined members
@@ -225,6 +233,82 @@ function emitSafe(event, data) {
         }
     } catch (e) {
         console.warn('[SIGNAL][fallback emit] failed', event, e);
+    }
+}
+
+// Audio playback helper functions
+function resetAudioState() {
+    if (currentAudio) {
+        currentAudio.pause();
+        currentAudio = null;
+    }
+    if (currentAudioUrl) {
+        URL.revokeObjectURL(currentAudioUrl);
+        currentAudioUrl = null;
+    }
+    if (audioTimeoutId) {
+        clearTimeout(audioTimeoutId);
+        audioTimeoutId = null;
+    }
+    isAudioPlaying = false;
+    isAudioPaused = false;
+}
+
+function startAudioTimeout() {
+    if (audioTimeoutId) {
+        clearTimeout(audioTimeoutId);
+    }
+    audioTimeoutId = setTimeout(() => {
+        console.log('⏰ [AUDIO] 5-minute timeout reached, resetting audio');
+        resetAudioState();
+        const btnAudio = document.getElementById('btnAudio');
+        if (btnAudio) {
+            btnAudio.textContent = 'Audio';
+            btnAudio.disabled = true;
+            btnAudio.style.opacity = '0.5';
+            btnAudio.style.cursor = 'not-allowed';
+        }
+        notifyCockpitPlaybackComplete();
+        msg('System', '⚠️ Audio timeout - please regenerate');
+    }, AUDIO_TIMEOUT_MS);
+}
+
+function notifyCockpitPlaybackComplete() {
+    try {
+        if (signaling?.socket?.connected) {
+            signaling.socket.emit('audio_playback_complete', {
+                deviceId: ANDROID_XR_ID,
+                timestamp: Date.now()
+            });
+            console.log('✅ [AUDIO] Notified cockpit of playback completion');
+        }
+    } catch (err) {
+        console.warn('[AUDIO] Failed to notify cockpit:', err);
+    }
+}
+
+function toggleAudioPlayback() {
+    if (!currentAudio) {
+        console.warn('[AUDIO] No audio loaded');
+        return;
+    }
+
+    // Check the actual audio state instead of our tracking variable
+    // This prevents race conditions during initialization
+    if (!currentAudio.paused) {
+        // Audio is currently playing, so pause it
+        currentAudio.pause();
+        // Button will be updated by onpause event handler
+        console.log('⏸️ [AUDIO] Pausing...');
+    } else {
+        // Audio is paused, so play it
+        currentAudio.play().then(() => {
+            // Button will be updated by onplay event handler
+            console.log('▶️ [AUDIO] Resuming...');
+        }).catch(err => {
+            console.error('[AUDIO] Play error:', err);
+            msg('System', '⚠️ Failed to play audio: ' + err.message);
+        });
     }
 }
 
@@ -443,11 +527,16 @@ function createSignaling() {
         xrId: ANDROID_XR_ID
     });
 
+    console.log('[VISION DEVICE] SignalingClient created - audio handler will be attached');
+
     signaling.listener = {
         onConnected: () => {
             isServerConnected = true;
             setStatus(true);
             msg('System', 'Connected to server');
+            console.log('[VISION DEVICE] ✅ Connected - Socket ID:', signaling?.socket?.id);
+            console.log('[VISION DEVICE] ✅ onPlayAudio handler registered:', !!signaling.listener?.onPlayAudio);
+            console.log('[VISION DEVICE] ✅ Socket play_audio listeners:', signaling?.socket?.listeners('play_audio')?.length || 0);
 
             // start 12s telemetry
             telemetry = new TelemetryReporter({
@@ -547,6 +636,168 @@ function createSignaling() {
 
             if (cmd === 'mute') { applyMute(true); return; }
             if (cmd === 'unmute') { applyMute(false); return; }
+        },
+
+        onPlayAudio: (payload) => {
+            console.log('🔊🔊🔊 [VISION DEVICE] ★★★ AUDIO RECEIVED ★★★ 🔊🔊🔊', {
+                hasPayload: !!payload,
+                hasAudio: !!payload?.audio,
+                audioLength: payload?.audio?.length,
+                contentType: payload?.contentType,
+                timestamp: payload?.timestamp,
+                payloadKeys: payload ? Object.keys(payload) : []
+            });
+
+            try {
+                const audioBase64 = payload?.audio;
+                const contentType = payload?.contentType || 'audio/mpeg';
+
+                if (!audioBase64) {
+                    console.error('❌ [VISION DEVICE] NOT RECEIVED - No audio data in payload');
+                    msg('System', '⚠️ No audio data');
+                    return;
+                }
+
+                console.log('✅ [VISION DEVICE] RECEIVED - Decoding base64 audio, length:', audioBase64.length);
+
+                // Clean up previous audio
+                if (currentAudio) {
+                    currentAudio.pause();
+                    currentAudio = null;
+                }
+                if (currentAudioUrl) {
+                    URL.revokeObjectURL(currentAudioUrl);
+                    currentAudioUrl = null;
+                }
+                if (audioTimeoutId) {
+                    clearTimeout(audioTimeoutId);
+                    audioTimeoutId = null;
+                }
+
+                const audioData = atob(audioBase64);
+                const arrayBuffer = new ArrayBuffer(audioData.length);
+                const uint8Array = new Uint8Array(arrayBuffer);
+
+                for (let i = 0; i < audioData.length; i++) {
+                    uint8Array[i] = audioData.charCodeAt(i);
+                }
+
+                const blob = new Blob([uint8Array], { type: contentType });
+                currentAudioUrl = URL.createObjectURL(blob);
+
+                console.log('✅ [VISION DEVICE] Created blob URL:', currentAudioUrl, 'size:', blob.size);
+
+                currentAudio = new Audio(currentAudioUrl);
+
+                // Update button to Pause state (audio will autoplay)
+                const btnAudio = document.getElementById('btnAudio');
+                console.log('🔘 [VISION DEVICE] Button before update:', btnAudio ? btnAudio.textContent : 'NULL');
+                if (btnAudio) {
+                    btnAudio.disabled = false;
+                    btnAudio.style.opacity = '1';
+                    btnAudio.style.cursor = 'pointer';
+                    btnAudio.textContent = 'Pause';
+                    console.log('✅ [VISION DEVICE] Audio button updated to:', btnAudio.textContent);
+                } else {
+                    console.error('❌ [VISION DEVICE] btnAudio element not found!');
+                }
+
+                // Set up event handlers BEFORE playing to avoid race conditions
+                currentAudio.onended = () => {
+                    console.log('✅ [VISION DEVICE] Playback finished');
+                    resetAudioState();
+                    if (btnAudio) {
+                        btnAudio.textContent = 'Audio';
+                        btnAudio.disabled = true;
+                        btnAudio.style.opacity = '0.5';
+                        btnAudio.style.cursor = 'not-allowed';
+                    }
+                    notifyCockpitPlaybackComplete();
+                };
+
+                let hasStartedPlaying = false;
+
+                currentAudio.onplay = () => {
+                    console.log('▶️ [VISION DEVICE] Audio playing');
+                    hasStartedPlaying = true;
+                    isAudioPlaying = true;
+                    isAudioPaused = false;
+                    if (audioTimeoutId) {
+                        clearTimeout(audioTimeoutId);
+                        audioTimeoutId = null;
+                    }
+                    // Update button to reflect playing state
+                    const btn = document.getElementById('btnAudio');
+                    if (btn) {
+                        btn.textContent = 'Pause';
+                        console.log('✅ [VISION DEVICE] onplay: Button set to Pause');
+                    }
+                    // Notify cockpit that audio is playing
+                    try {
+                        if (signaling?.socket?.connected) {
+                            signaling.socket.emit('audio_state_changed', {
+                                deviceId: ANDROID_XR_ID,
+                                state: 'playing',
+                                timestamp: Date.now()
+                            });
+                            console.log('✅ [AUDIO] Notified cockpit: audio playing');
+                        }
+                    } catch (err) {
+                        console.warn('[AUDIO] Failed to notify cockpit:', err);
+                    }
+                };
+
+                currentAudio.onpause = () => {
+                    // Only handle pause if audio has actually started playing and hasn't ended
+                    if (hasStartedPlaying && !currentAudio.ended) {
+                        console.log('⏸️ [VISION DEVICE] Audio paused by user');
+                        isAudioPaused = true;
+                        isAudioPlaying = false;
+                        startAudioTimeout();
+                        // Update button to reflect paused state
+                        const btn = document.getElementById('btnAudio');
+                        if (btn) {
+                            btn.textContent = 'Play';
+                            console.log('✅ [VISION DEVICE] onpause: Button set to Play');
+                        }
+                        // Notify cockpit that audio is paused
+                        try {
+                            if (signaling?.socket?.connected) {
+                                signaling.socket.emit('audio_state_changed', {
+                                    deviceId: ANDROID_XR_ID,
+                                    state: 'paused',
+                                    timestamp: Date.now()
+                                });
+                                console.log('✅ [AUDIO] Notified cockpit: audio paused');
+                            }
+                        } catch (err) {
+                            console.warn('[AUDIO] Failed to notify cockpit:', err);
+                        }
+                    }
+                };
+
+                console.log('✅ [VISION DEVICE] Attempting to auto-play audio...');
+
+                currentAudio.play().then(() => {
+                    msg('System', '🔊 Playing summary audio');
+                    console.log('✅ [VISION DEVICE] Playing audio - SUCCESS');
+                }).catch(err => {
+                    console.error('❌ [VISION DEVICE] Playback error:', err);
+                    msg('System', '⚠️ Failed to play audio: ' + err.message);
+                    isAudioPlaying = false;
+                    const btn = document.getElementById('btnAudio');
+                    if (btn) {
+                        btn.textContent = 'Play';
+                        btn.disabled = false;
+                        btn.style.opacity = '1';
+                        btn.style.cursor = 'pointer';
+                        console.log('❌ [VISION DEVICE] Play failed - button set to Play');
+                    }
+                });
+            } catch (err) {
+                console.error('[AUDIO] Error processing audio:', err);
+                msg('System', '⚠️ Audio playback error: ' + err.message);
+            }
         },
 
         onDeviceListUpdated: (listPairs) => {
@@ -913,6 +1164,7 @@ elBtnVideo.addEventListener('click', () => {
 
 // ----------------- Voice + Notes (partial/final transcripts) -----------------
 let SR = null, rec = null, speechIntentLang = 'en-US';
+let conversationBuffer = '';
 
 function setupSR() {
     SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
@@ -926,32 +1178,30 @@ function setupSR() {
         let interim = '';
         let finalTxt = '';
         for (let i = e.resultIndex; i < e.results.length; i++) {
-            const t = e.results[i][0].transcript.toLowerCase().trim();
+            const t = e.results[i][0].transcript.trim();
             if (e.results[i].isFinal) finalTxt += (finalTxt ? ' ' : '') + t;
             else interim += (interim ? ' ' : '') + t;
         }
 
         if (interim && recordingActive) {
-            const now = Date.now();
-            if (now - lastPartialSentAt > PARTIAL_THROTTLE_MS) {
-                lastPartialSentAt = now;
-                sendTranscript(interim, false);
-            }
+            elChip.textContent = `Listening: ${interim}`;
+            elChip.hidden = false;
         }
 
         if (finalTxt) {
-            lastRecognizedCommand = finalTxt;
+            const finalLower = finalTxt.toLowerCase();
+            lastRecognizedCommand = finalLower;
             elChip.textContent = `Heard: ${finalTxt}`;
             elChip.hidden = false;
 
-            if (/\bcreate\b/.test(finalTxt)) {
+            if (/\bcreate\b/.test(finalLower)) {
                 onStopRecordingNote();
                 return;
             } else if (recordingActive) {
-                // buffer note only; send once at stop
                 noteBuffer += (noteBuffer ? ' ' : '') + finalTxt;
+                conversationBuffer += (conversationBuffer ? ' ' : '') + finalTxt;
             } else {
-                processVoiceCommand(finalTxt);
+                processVoiceCommand(finalLower);
             }
         }
     };
@@ -1023,6 +1273,7 @@ function onStartRecordingNote() {
     if (recordingActive) return;
     recordingActive = true;
     noteBuffer = '';
+    conversationBuffer = '';
     if (!isListening) startVoiceRecognition();
     msg('System', 'Note recording started (say "create" to stop).');
 }
@@ -1033,12 +1284,15 @@ function onStopRecordingNote() {
 }
 function finalizeRecordingNote() {
     recordingActive = false;
+
+    if (conversationBuffer.trim()) {
+        sendTranscript(conversationBuffer.trim(), true);
+        conversationBuffer = '';
+    }
+
     const finalText = noteBuffer.trim();
     msg('System', `Note saved to console (${finalText.length} chars).`);
 
-    if (finalText) sendTranscript(finalText, true);
-
-    // 🚀 Trigger SOAP on Dock/Scribe (action+command for compatibility)
     const targetId = pairedDesktopId;
     if (!targetId) {
         msg('System', '⚠️ Not paired yet. Wait for room_joined.');
@@ -1050,7 +1304,6 @@ function finalizeRecordingNote() {
             action: 'scribe_flush'
         });
     }
-
 
     noteBuffer = '';
 }
@@ -1112,6 +1365,14 @@ function sendControlCommand(command) {
 
 }
 
+
+// Audio button click handler
+const elBtnAudio = document.getElementById('btnAudio');
+if (elBtnAudio) {
+    elBtnAudio.addEventListener('click', () => {
+        toggleAudioPlayback();
+    });
+}
 
 elBtnSend.addEventListener('click', () => {
     if (!hasDeviceWritePermission()) {
