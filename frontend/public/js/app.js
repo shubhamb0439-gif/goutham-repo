@@ -5,6 +5,7 @@ console.log('[INIT] Initializing DOM elements');
 const videoElement = document.getElementById('xrVideo');
 const statusElement = document.getElementById('status');
 const batteryElement = document.getElementById('dockBatteryLabel'); // (or 'battery' if you use that id)
+const qualityElement = document.getElementById('dockQualityLabel'); // NEW: J/L/R label
 const deviceListElement = document.getElementById('deviceList');
 const messageInput = document.getElementById('messageInput');
 const sendButton = document.getElementById('sendButton');
@@ -539,6 +540,53 @@ function clearBattery() {
     batteryElement.textContent = 'Battery: --%';
 }
 
+// ---------------- WebRTC Quality label (Dock only) ----------------
+// J = jitterMs, L = lossPct, R = rttMs
+function setQualityJLR(jitterMs, lossPct, rttMs) {
+    if (!qualityElement) return;
+
+    const jNum = Number(jitterMs);
+    const lNum = Number(lossPct);
+    const rNum = Number(rttMs);
+
+    const j = Number.isFinite(jNum) ? `${jNum.toFixed(1)}ms` : '--';
+    const l = Number.isFinite(lNum) ? `${lNum.toFixed(1)}%` : '--';
+    const r = Number.isFinite(rNum) ? `${rNum.toFixed(1)}ms` : '--';
+
+    qualityElement.textContent = `J:${j}  L:${l}  R:${r}`;
+
+    // 🔷 Update modern quality chips (if present)
+    const cj = document.getElementById('qChipJ');
+    const cl = document.getElementById('qChipL');
+    const cr = document.getElementById('qChipR');
+    // ✅ If stream is active, make chips visible (blank UI otherwise)
+    if (cj) cj.style.display = 'inline-block';
+    if (cl) cl.style.display = 'inline-block';
+    if (cr) cr.style.display = 'inline-block';
+
+    if (cj) cj.textContent = `J ${Number.isFinite(jNum) ? jNum.toFixed(1) : '--'}ms`;
+    if (cl) cl.textContent = `L ${Number.isFinite(lNum) ? lNum.toFixed(1) : '--'}%`;
+    if (cr) cr.textContent = `R ${Number.isFinite(rNum) ? rNum.toFixed(1) : '--'}ms`;
+
+
+}
+
+function clearQualityJLR() {
+    if (!qualityElement) return;
+
+    // Hide fallback label
+    qualityElement.textContent = '';
+
+    // Hide modern quality chips if present
+    const cj = document.getElementById('qChipJ');
+    const cl = document.getElementById('qChipL');
+    const cr = document.getElementById('qChipR');
+
+    if (cj) cj.style.display = 'none';
+    if (cl) cl.style.display = 'none';
+    if (cr) cr.style.display = 'none';
+}
+
 
 // ---- Heartbeat helpers ----
 function startHeartbeat() {
@@ -726,6 +774,7 @@ function initSocket() {
         lastDeviceList = [];
         updateDeviceList([]);
         clearBattery(); // ✅ reset battery UI on disconnect
+        clearQualityJLR(); // ✅ reset J/L/R UI on disconnect
 
         announcePresence('idle');
 
@@ -828,6 +877,32 @@ function initSocket() {
         setBattery(pct, !!u?.charging);
     });
 
+    // --- live WebRTC quality updates (pair isolated) ---
+    socket.on('webrtc_quality_update', (payload) => {
+        // expected: { deviceId: "XR-8000", samples: [{ jitterMs, rttMs, lossPct, bitrateKbps, ts }] }
+        const id = normalizeId(payload?.deviceId);
+        const samples = Array.isArray(payload?.samples) ? payload.samples : null;
+
+        // If we're not in a room, ignore (keeps Option B isolation)
+        if (!currentRoom || !id || !samples || samples.length === 0) return;
+
+        // ✅ If pairedPeerId not ready yet, auto-heal it from first quality packet
+        if (!pairedPeerId) {
+            pairedPeerId = payload?.deviceId;
+        }
+
+        const peerNorm = normalizeId(pairedPeerId);
+
+        // Strict isolation: only show quality for MY paired peer while I am in a room
+        if (!peerNorm) return;
+        if (id !== peerNorm) return;
+
+        // Use the latest sample
+        const last = samples[samples.length - 1] || {};
+
+        setQualityJLR(last.jitterMs, last.lossPct, last.rttMs);
+    });
+
     socket.on('control', handleControlCommand);
     socket.on('message-cleared', handleMessagesCleared);
     socket.on('message_history', handleMessageHistory);
@@ -916,9 +991,7 @@ function initSocket() {
             try { startStream(); } catch (e) { console.warn('[PAIR] deferred startStream failed:', e); }
         }
 
-        if (startWasDeferred) {
-            try { socket?.emit('signal', { type: 'request_offer', from: XR_ID, roomId: currentRoom }); } catch { }
-        }
+
     });
 
 
@@ -936,6 +1009,7 @@ function initSocket() {
             // ✅ do NOT reuse lastDeviceList here
             updateDeviceList([]);
             clearBattery(); // ✅ NEW: reset Dock battery when peer leaves
+            clearQualityJLR(); // ✅ reset J/L/R UI on disconnect
 
             // optional: only if connected
             if (socket?.connected) {
@@ -1122,6 +1196,11 @@ function handleSignalMessage(data) {
     switch (type) {
         case 'offer':
             console.log('[WEBRTC] 📞 Received offer from peer');
+            // ✅ Stop any pending "request_offer" retry once we actually got an offer
+            if (window.__offerRetryTimer) {
+                clearTimeout(window.__offerRetryTimer);
+                window.__offerRetryTimer = null;
+            }
             handleOffer(data.data);
             break;
         case 'ice-candidate':

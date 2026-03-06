@@ -8,10 +8,11 @@
     <meta name="theme-color" content="#0b1220" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="manifest" href="/manifest.webmanifest">
 
 
     <!-- Device-only PWA -->
-    <link rel="manifest" href="/device.webmanifest">
+    <!-- <link rel="manifest" href="/device.webmanifest"> -->
     <link rel="icon" href="/public/images/xr-logo-192.png" sizes="192x192" />
     <link rel="apple-touch-icon" href="/public/images/xr-logo-192.png" />
     <!-- Styles -->
@@ -43,7 +44,8 @@
                 <button id="btnMute" class="chip-btn">Mute</button>
                 <button id="btnVideo" class="chip-btn">Hide Video</button>
                 <button id="btnVoice" class="chip-btn">Start Voice</button>
-                <button id="btnAudio" class="chip-btn" disabled style="opacity: 0.5; cursor: not-allowed;">Audio</button>
+                <button id="btnAudio" class="chip-btn" disabled
+                    style="opacity: 0.5; cursor: not-allowed;">Audio</button>
             </div>
             <div class="controls-row">
                 <button id="btnStartRec" class="btn-outline">Start Recording</button>

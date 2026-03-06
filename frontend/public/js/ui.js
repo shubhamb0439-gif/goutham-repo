@@ -1272,22 +1272,7 @@ elBtnStream.addEventListener('click', async () => {
         setStatus(true);
         msg('System', "Stream started (muted by default). Say 'unmute' to unmute.");
 
-        // Immediately push an SDP offer to the Dock (device is the offerer)
-        ensureStreamer();
-        const to = (pairedDesktopId || signaling?.currentDesktopId || DEFAULT_DESKTOP_ID);
 
-        // ✅ persist last selected desktop
-        persistedState.selectedDesktopId = to;
-        saveState();
-        streamer.sendOfferTo(to).catch(console.error);
-
-        // Optional: retry once in case the Dock wasn't ready yet
-        if (window.__offerRetryTimer) clearTimeout(window.__offerRetryTimer);
-        window.__offerRetryTimer = setTimeout(() => {
-            if (streamActive && signaling?.isConnectedNow?.()) {
-                streamer.sendOfferTo(to).catch(() => { });
-            }
-        }, 4000);
 
     }
 });

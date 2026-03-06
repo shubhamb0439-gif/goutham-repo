@@ -271,39 +271,54 @@ export class WebRtcStreamer {
     } catch { }
   }
 
-
   /** Desktop answered our offer. */
   async onRemoteAnswerReceived(answer, fromId) {
-    const pc = this._pcs.get(fromId);
+    const key = String(fromId || '').trim().toUpperCase();
+    const pc = this._pcs.get(key) || this._pcs.get(fromId);
     if (!pc) return;
+
+    // ✅ Mandatory guard: only apply an ANSWER if we are waiting for one
+    // (otherwise it's a stale/duplicate answer arriving after we're already stable)
+    if (pc.signalingState !== 'have-local-offer') {
+      console.warn(
+        `[RTC][${key}] Ignoring stale/duplicate answer (state=${pc.signalingState}, ` +
+        `local=${pc.localDescription?.type || 'null'}, remote=${pc.remoteDescription?.type || 'null'})`
+      );
+      return;
+    }
+
     try {
       await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: answer.sdp }));
     } catch (e) {
-      console.error(`setRemoteDescription(answer) failed for ${fromId}`, e);
+      console.error(`setRemoteDescription(answer) failed for ${key}`, e);
     }
   }
 
   /** Desktop sent us a remote offer (rare in your flow). */
   async onRemoteOfferReceived(offer, fromId) {
-    let pc = this._pcs.get(fromId);
+    const key = String(fromId || '').trim().toUpperCase();
+
+    let pc = this._pcs.get(key);
     if (!pc) {
-      pc = this._ensurePc(fromId);
+      pc = this._ensurePc(key);
       this._addLocalTracks(pc);
     }
+
     try {
       await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: offer.sdp }));
       const desc = await pc.createAnswer();
       await pc.setLocalDescription(desc);
-      this.signaling.sendAnswer({ type: 'answer', sdp: desc.sdp }, this.ANDROID_XR_ID, fromId);
+      this.signaling.sendAnswer({ type: 'answer', sdp: desc.sdp }, this.ANDROID_XR_ID, key);
     } catch (e) {
-      console.error(`Answer flow failed for ${fromId}`, e);
+      console.error(`Answer flow failed for ${key}`, e);
     }
   }
-
   /** Desktop sent us a remote ICE candidate. */
   async onRemoteIceCandidate(candidate, fromId) {
-    const pc = this._pcs.get(fromId);
+    const key = String(fromId || '').trim().toUpperCase();
+    const pc = this._pcs.get(key);
     if (!pc) return;
+
     try {
       await pc.addIceCandidate(new RTCIceCandidate({
         candidate: candidate.candidate,
@@ -311,7 +326,7 @@ export class WebRtcStreamer {
         sdpMid: candidate.sdpMid
       }));
     } catch (e) {
-      console.error(`addIceCandidate failed for ${fromId}`, e);
+      console.error(`addIceCandidate failed for ${key}`, e);
     }
   }
 
@@ -446,38 +461,41 @@ export class WebRtcStreamer {
   }
 
   _ensurePc(targetId) {
-    let pc = this._pcs.get(targetId);
+    const key = String(targetId || '').trim().toUpperCase();
+
+    let pc = this._pcs.get(key);
     if (pc) return pc;
 
     pc = new RTCPeerConnection({ iceServers: this._iceServers /* unified plan is default */ });
 
     // Logging parity (PeerConnectionObserver)
     pc.onicegatheringstatechange = () =>
-      console.debug(`[${targetId}] iceGatheringState=${pc.iceGatheringState}`);
+      console.debug(`[${key}] iceGatheringState=${pc.iceGatheringState}`);
     pc.oniceconnectionstatechange = () =>
-      console.debug(`[${targetId}] iceConnectionState=${pc.iceConnectionState}`);
+      console.debug(`[${key}] iceConnectionState=${pc.iceConnectionState}`);
     pc.onconnectionstatechange = () => {
-      console.debug(`[${targetId}] connectionState=${pc.connectionState}`);
+      console.debug(`[${key}] connectionState=${pc.connectionState}`);
       if (pc.connectionState === 'connected') {
         // Start sampling once when the first connection is active
         if (!this._qualityTimer) this._startQualitySampling(pc);
-        this._requestKeyFrame(pc);          // <— ADD THIS LINE
+        this._requestKeyFrame(pc);
       } else if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
         if (!this._anyPcConnected()) this._stopQualitySampling();
       }
     };
+
     pc.onicecandidate = (e) => {
       const c = e.candidate;
       if (!c) return;
       this.signaling.sendIceCandidate(
         { candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex },
         this.ANDROID_XR_ID,
-        targetId
+        key
       );
     };
-    // (Receiver-side events not used on the sender; kept for completeness)
-    pc.ontrack = (ev) => console.debug(`[${targetId}] ontrack`, ev.streams?.[0]);
 
+    // (Receiver-side events not used on the sender; kept for completeness)
+    pc.ontrack = (ev) => console.debug(`[${key}] ontrack`, ev.streams?.[0]);
 
     // Ensure the initial offer contains an m=audio section so first Unmute works without renegotiation.
     try {
@@ -489,9 +507,8 @@ export class WebRtcStreamer {
       }
     } catch { }
 
-
-    this._pcs.set(targetId, pc);
-    console.debug(`[${targetId}] RTCPeerConnection created with TURN/STUN config`);
+    this._pcs.set(key, pc);
+    console.debug(`[${key}] RTCPeerConnection created with TURN/STUN config`);
     return pc;
   }
 
@@ -534,16 +551,17 @@ export class WebRtcStreamer {
     this._requestKeyFrame(pc); // ← ADDED LINE: ask for an immediate keyframe
   }
 
-
   async _createAndSendOffer(targetId) {
-    const pc = this._pcs.get(targetId);
+    const key = String(targetId || '').trim().toUpperCase();
+    const pc = this._pcs.get(key);
     if (!pc) return;
+
     try {
       const offer = await pc.createOffer({});
       await pc.setLocalDescription(offer);
-      this.signaling.sendOffer({ type: 'offer', sdp: offer.sdp }, this.ANDROID_XR_ID, targetId);
+      this.signaling.sendOffer({ type: 'offer', sdp: offer.sdp }, this.ANDROID_XR_ID, key);
     } catch (e) {
-      console.error(`create/send offer failed for ${targetId}`, e);
+      console.error(`create/send offer failed for ${key}`, e);
     }
   }
 

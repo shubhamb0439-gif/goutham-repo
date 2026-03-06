@@ -302,10 +302,48 @@ export class SignalingClient {
     // Now that we have roomId, flush only items queued for THIS connect generation.
     try {
       const remaining = [];
+
+      // Keep only the LAST "offer-trigger" items for this generation to prevent double-offer.
+      let lastOfferSignal = null;
+      let lastAnswerSignal = null;
+      const iceSignals = [];
+
+      let lastRequestOfferControl = null;
+      let lastStartStreamControl = null;
+
       for (const item of this._outbox) {
-        if (item?.gen === this._gen) this.socket?.emit(item.event, item.data);
-        else remaining.push(item); // defensive: keep anything stale (should be none)
+        if (item?.gen !== this._gen) {
+          remaining.push(item);
+          continue;
+        }
+
+        if (item.event === 'signal') {
+          const t = item.data?.type;
+          if (t === 'offer') lastOfferSignal = item;
+          else if (t === 'answer') lastAnswerSignal = item;
+          else if (t === 'ice-candidate') iceSignals.push(item);
+          else remaining.push(item);
+          continue;
+        }
+
+        if (item.event === 'control') {
+          const cmd = String(item.data?.command || item.data?.action || '').trim().toLowerCase();
+          if (cmd === 'request_offer') lastRequestOfferControl = item;
+          else if (cmd === 'start_stream') lastStartStreamControl = item;
+          else remaining.push(item);
+          continue;
+        }
+
+        remaining.push(item);
       }
+
+      // Flush in safe order: control triggers first, then offer/answer, then ICE.
+      if (lastRequestOfferControl) this.socket?.emit(lastRequestOfferControl.event, lastRequestOfferControl.data);
+      if (lastStartStreamControl) this.socket?.emit(lastStartStreamControl.event, lastStartStreamControl.data);
+      if (lastOfferSignal) this.socket?.emit(lastOfferSignal.event, lastOfferSignal.data);
+      if (lastAnswerSignal) this.socket?.emit(lastAnswerSignal.event, lastAnswerSignal.data);
+      for (const it of iceSignals) this.socket?.emit(it.event, it.data);
+
       this._outbox = remaining;
     } catch {
       // ignore
@@ -414,7 +452,7 @@ export class SignalingClient {
     // Otherwise offers/ICE get dropped server-side (no roomId yet) and streaming won't start.
     if (event === 'signal') {
       const t = data?.type;
-      const webrtcTypes = new Set(['offer', 'answer', 'ice-candidate', 'request_offer']);
+      const webrtcTypes = new Set(['offer', 'answer', 'ice-candidate']);
       if (webrtcTypes.has(t) && !this.roomId) {
         const item = { event, data, gen: this._gen };
         if (this._outbox.length < this._OUTBOX_MAX) this._outbox.push(item);

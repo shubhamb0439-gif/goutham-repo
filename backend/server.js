@@ -385,17 +385,25 @@ const sendView = (name) => (_req, res) => {
 };
 
 // PWA assets — keep this ABOVE any /device HTML route
-// Serve both common manifest URLs, but point both to device.webmanifest
-app.get(['/manifest.webmanifest', '/device.webmanifest'], (req, res) => {
+
+// ✅ Main (single-app) manifest: Platform + Device in ONE PWA
+app.get('/manifest.webmanifest', (req, res) => {
   res.type('application/manifest+json');
   res.set('Cache-Control', 'no-cache');
-  res.sendFile(path.join(PUBLIC_DIR, 'device.webmanifest')); // file exists here
+  res.sendFile(path.join(PUBLIC_DIR, 'manifest.webmanifest'));
+});
+
+// ✅ Device manifest (keep available, but do NOT use it for the main app)
+app.get('/device.webmanifest', (req, res) => {
+  res.type('application/manifest+json');
+  res.set('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC_DIR, 'device.webmanifest'));
 });
 
 // Map ALL service-worker entrypoints to the same script
 app.get(['/sw.js', '/sw-device.js', '/device/sw.js'], (req, res) => {
   res.type('application/javascript');
-  res.set('Service-Worker-Allowed', '/device/');             // allow /device/* scope
+  res.set('Service-Worker-Allowed', '/'); // ✅ allow /platform + /device in one PWA
   res.set('Cache-Control', 'no-cache');
   res.sendFile(path.join(PUBLIC_DIR, 'sw-device.js'));       // NOTE: no /js subfolder
 });
@@ -4961,10 +4969,10 @@ async function generateSoapNote(transcript, templateId = null) {
   const extractErrMsg = (err) =>
     String(
       err?.response?.data?.error?.message ||
-        err?.response?.data?.message ||
-        (typeof err?.response?.data === "string" ? err.response.data : "") ||
-        err?.message ||
-        "Error generating note"
+      err?.response?.data?.message ||
+      (typeof err?.response?.data === "string" ? err.response.data : "") ||
+      err?.message ||
+      "Error generating note"
     );
 
   try {

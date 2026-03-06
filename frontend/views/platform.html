@@ -5,6 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Platform </title>
+  <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/public/css/common.css" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -341,8 +342,8 @@
 
             <!-- XR Device (PWA / Android) -->
             <!-- XR Device (PWA / Android) -->
-            <a href="/device" target="_blank" rel="noopener noreferrer" class="xr-screen-item group block mb-3 rounded-xl bg-gray-800/80 px-4 py-3 border border-gray-700
-         hover:border-primary-dark hover:bg-gray-800 transition transform hover:-translate-y-0.5" data-screen-id="4">
+            <a href="/device" class="xr-screen-item group block mb-3 rounded-xl bg-gray-800/80 px-4 py-3 border border-gray-700
+          hover:border-primary-dark hover:bg-gray-800 transition transform hover:-translate-y-0.5" data-screen-id="4">
 
               <div class="flex items-center justify-between">
                 <div class="flex items-center space-x-3">
@@ -618,88 +619,88 @@
             <div id="assignByProviderView" class="hidden">
 
               <!-- Provider-first filter row -->
-                <div id="assignProviderTopPanel" class="mb-6 flex flex-wrap items-end gap-6">
+              <div id="assignProviderTopPanel" class="mb-6 flex flex-wrap items-end gap-6">
 
-                  <!-- Clinic dropdown -->
-                  <div>
-                    <label for="assignClinicFilterByProvider" class="block text-sm mb-1 text-gray-300">
-                      Select Clinic
-                    </label>
-                    <select id="assignClinicFilterByProvider"
-                      class="px-3 py-2 rounded bg-gray-700 border border-gray-600 text-sm text-white min-w-[220px]">
-                      <option value="">Select Clinic</option>
-                    </select>
-                  </div>
-
-                  <!-- Provider dropdown (filtered by clinic) -->
-                  <div>
-                    <label for="assignProviderFilterByProvider" class="block text-sm mb-1 text-gray-300">
-                      Select Provider
-                    </label>
-                    <select id="assignProviderFilterByProvider"
-                      class="px-3 py-2 rounded bg-gray-700 border border-gray-600 text-sm text-white min-w-[260px]">
-                      <option value="">Select clinic first</option>
-                    </select>
-                  </div>
-
-                  <!-- Manager dropdown -->
-                  <div>
-                    <label for="assignManagerFilterByProvider" class="block text-sm mb-1 text-gray-300">
-                      Select Manager
-                    </label>
-                    <select id="assignManagerFilterByProvider"
-                      class="px-3 py-2 rounded bg-gray-700 border border-gray-600 text-sm text-white min-w-[220px]">
-                      <option value="">Select provider first</option>
-                    </select>
-                  </div>
-
-                  <!-- Reportee dropdown -->
-                  <div>
-                    <label for="assignReporteeFilterByProvider" class="block text-sm mb-1 text-gray-300">
-                      Select Reportee
-                    </label>
-                    <select id="assignReporteeFilterByProvider"
-                      class="px-3 py-2 rounded bg-gray-700 border border-gray-600 text-sm text-white min-w-[260px]">
-                      <option value="">Select manager first</option>
-                    </select>
-                  </div>
-
-                  <!-- Save -->
-                  <div>
-                    <button id="assignUsersSaveButtonByProvider" class="btn-primary px-4 py-2 rounded text-sm">
-                      Save Assignment
-                    </button>
-                  </div>
+                <!-- Clinic dropdown -->
+                <div>
+                  <label for="assignClinicFilterByProvider" class="block text-sm mb-1 text-gray-300">
+                    Select Clinic
+                  </label>
+                  <select id="assignClinicFilterByProvider"
+                    class="px-3 py-2 rounded bg-gray-700 border border-gray-600 text-sm text-white min-w-[220px]">
+                    <option value="">Select Clinic</option>
+                  </select>
                 </div>
 
-
-                <!-- Provider-centric table -->
-                <div class="bg-gray-800 rounded-xl p-6 shadow-lg">
-                  <div class="overflow-x-auto">
-                    <table class="w-full">
-                      <thead class="border-b border-gray-700">
-                        <tr class="text-left text-gray-400 text-sm">
-                          <th class="pb-3">Provider Name</th>
-                          <th class="pb-3">Provider Email</th>
-                          <th class="pb-3">Provider XR ID</th>
-                          <th class="pb-3">Clinic</th>
-                          <th class="pb-3">Scribe Name</th>
-                          <th class="pb-3">Scribe Email</th>
-                          <th class="pb-3">Scribe XR ID</th>
-                          <th class="pb-3">Scribe Manager</th>
-                          <th class="pb-3">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody id="assignUsersTableByProvider" class="text-gray-300">
-                        <tr>
-                          <td colspan="9" class="py-8 text-center text-gray-500">
-                            Select a Provider above to view assignments.
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
+                <!-- Provider dropdown (filtered by clinic) -->
+                <div>
+                  <label for="assignProviderFilterByProvider" class="block text-sm mb-1 text-gray-300">
+                    Select Provider
+                  </label>
+                  <select id="assignProviderFilterByProvider"
+                    class="px-3 py-2 rounded bg-gray-700 border border-gray-600 text-sm text-white min-w-[260px]">
+                    <option value="">Select clinic first</option>
+                  </select>
                 </div>
+
+                <!-- Manager dropdown -->
+                <div>
+                  <label for="assignManagerFilterByProvider" class="block text-sm mb-1 text-gray-300">
+                    Select Manager
+                  </label>
+                  <select id="assignManagerFilterByProvider"
+                    class="px-3 py-2 rounded bg-gray-700 border border-gray-600 text-sm text-white min-w-[220px]">
+                    <option value="">Select provider first</option>
+                  </select>
+                </div>
+
+                <!-- Reportee dropdown -->
+                <div>
+                  <label for="assignReporteeFilterByProvider" class="block text-sm mb-1 text-gray-300">
+                    Select Reportee
+                  </label>
+                  <select id="assignReporteeFilterByProvider"
+                    class="px-3 py-2 rounded bg-gray-700 border border-gray-600 text-sm text-white min-w-[260px]">
+                    <option value="">Select manager first</option>
+                  </select>
+                </div>
+
+                <!-- Save -->
+                <div>
+                  <button id="assignUsersSaveButtonByProvider" class="btn-primary px-4 py-2 rounded text-sm">
+                    Save Assignment
+                  </button>
+                </div>
+              </div>
+
+
+              <!-- Provider-centric table -->
+              <div class="bg-gray-800 rounded-xl p-6 shadow-lg">
+                <div class="overflow-x-auto">
+                  <table class="w-full">
+                    <thead class="border-b border-gray-700">
+                      <tr class="text-left text-gray-400 text-sm">
+                        <th class="pb-3">Provider Name</th>
+                        <th class="pb-3">Provider Email</th>
+                        <th class="pb-3">Provider XR ID</th>
+                        <th class="pb-3">Clinic</th>
+                        <th class="pb-3">Scribe Name</th>
+                        <th class="pb-3">Scribe Email</th>
+                        <th class="pb-3">Scribe XR ID</th>
+                        <th class="pb-3">Scribe Manager</th>
+                        <th class="pb-3">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="assignUsersTableByProvider" class="text-gray-300">
+                      <tr>
+                        <td colspan="9" class="py-8 text-center text-gray-500">
+                          Select a Provider above to view assignments.
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
 
             </div> <!-- #assignByProviderView -->
 

@@ -33,10 +33,52 @@
         <!-- Top Bar -->
         <div class="flex justify-between items-center px-4 md:px-6 py-3 md:py-4 bg-gray-900 shadow-md z-10">
             <h1 class="text-xl md:text-2xl font-bold text-white">XR Vision Dock</h1>
-            <div class="flex gap-4 items-center">
+
+            <!-- RIGHT SIDE GROUP -->
+            <div class="flex items-center gap-2 md:gap-3">
+
+                <!-- Battery pill -->
+                <div class="flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800/60 text-gray-200 text-xs md:text-sm
+           ring-1 ring-white/10 shadow-sm backdrop-blur">
+                    <span class="opacity-90">🔋</span>
+                    <span id="dockBatteryLabel" class="whitespace-nowrap">Battery: --%</span>
+
+                    <!-- Mini battery meter -->
+                    <div class="hidden md:block w-16 h-2 rounded-full bg-white/10 overflow-hidden">
+                        <div id="dockBatteryBar" class="h-full w-1/2 bg-emerald-400"></div>
+                    </div>
+                </div>
+
+                <!-- Quality pill -->
+                <div class="flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800/60 text-gray-200 text-xs md:text-sm
+           ring-1 ring-white/10 shadow-sm backdrop-blur">
+                    <span class="opacity-90">📶</span>
+
+                    <!-- Desktop metric chips -->
+                    <div class="hidden md:flex items-center gap-1">
+                        <span id="qChipJ" class="px-2 py-0.5 rounded-full bg-white/10 ring-1 ring-white/10 text-[11px]">
+                            J --
+                        </span>
+                        <span id="qChipL" class="px-2 py-0.5 rounded-full bg-white/10 ring-1 ring-white/10 text-[11px]">
+                            L --
+                        </span>
+                        <span id="qChipR" class="px-2 py-0.5 rounded-full bg-white/10 ring-1 ring-white/10 text-[11px]">
+                            R --
+                        </span>
+                    </div>
+
+                    <!-- Mobile fallback -->
+                    <span id="dockQualityLabel" class="md:hidden whitespace-nowrap font-medium">
+                        J:-- L:-- R:--
+                    </span>
+                </div>
+
+                <!-- Status pill (NOW LAST = right corner) -->
                 <span id="status"
-                    class="px-3 py-1 rounded-full text-white bg-yellow-500 text-xs md:text-base">Connecting</span>
-                <div id="dockBatteryLabel" class="text-xs md:text-sm text-gray-300">🔋 Battery: --%</div>
+                    class="px-3 py-1 rounded-full text-white bg-emerald-600 text-xs md:text-sm font-semibold shadow-sm ring-1 ring-emerald-500/30 cursor-pointer transition-all duration-300 hover:scale-105">
+                    Connecting
+                </span>
+
             </div>
         </div>
 
