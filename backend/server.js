@@ -351,6 +351,8 @@ const VIEWS_DIR = fs.existsSync(FRONTEND_VIEWS) ? FRONTEND_VIEWS : BACKEND_PUBLI
 const PUBLIC_DIR = fs.existsSync(FRONTEND_PUBLIC) ? FRONTEND_PUBLIC : BACKEND_PUBLIC;
 
 app.use('/public', express.static(PUBLIC_DIR));
+// ✅ Serve Digital Asset Links for TWA verification
+app.use('/.well-known', express.static(path.join(PUBLIC_DIR, '.well-known')));
 console.log(`[STATIC] Serving UI assets from ${PUBLIC_DIR}`);
 
 // Keep HTML fresh (safe for XR flows)
