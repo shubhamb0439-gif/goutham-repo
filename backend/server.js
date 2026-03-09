@@ -339,32 +339,26 @@ console.log('[MIDDLEWARE] Session enabled');
   }
 })();
 
-
-// // -------------------- UI routes (migrated from frontend/server.js) --------------------
-// 🧩 Paths
+// -------------------- UI routes (migrated from frontend/server.js) --------------------
 const FRONTEND_VIEWS = path.join(__dirname, '..', 'frontend', 'views');
-const FRONTEND_PUBLIC = path.join(__dirname, '..', 'frontend', 'public');
 const BACKEND_PUBLIC = path.join(__dirname, 'public');
 
-// 🧠 Choose which directory actually exists
+// Use frontend views if present, but ALWAYS use backend/public for static root
 const VIEWS_DIR = fs.existsSync(FRONTEND_VIEWS) ? FRONTEND_VIEWS : BACKEND_PUBLIC;
-const PUBLIC_DIR = fs.existsSync(FRONTEND_PUBLIC) ? FRONTEND_PUBLIC : BACKEND_PUBLIC;
+const PUBLIC_DIR = BACKEND_PUBLIC;
 
+// Serve backend/public at root so /.well-known/assetlinks.json works automatically
+app.use(express.static(PUBLIC_DIR));
+
+// Optional: also keep /public URLs working if your app already uses them
 app.use('/public', express.static(PUBLIC_DIR));
 
-// ✅ Explicit route for Digital Asset Links (bypass static middleware issues)
-app.get('/.well-known/assetlinks.json', (req, res) => {
-  const filePath = path.join(PUBLIC_DIR, '.well-known', 'assetlinks.json');
-  if (fs.existsSync(filePath)) {
-    res.type('application/json').sendFile(filePath);
-  } else {
-    console.error('[assetlinks] File not found at:', filePath);
-    res.status(404).send('assetlinks.json not found');
-  }
-});
-// ✅ Serve Digital Asset Links for TWA verification (must be at root /.well-known)
+// Serve Digital Asset Links folder
 app.use('/.well-known', express.static(path.join(PUBLIC_DIR, '.well-known')));
+
 console.log(`[STATIC] Serving UI assets from ${PUBLIC_DIR}`);
+console.log(`[STATIC] Assetlinks path = ${path.join(PUBLIC_DIR, '.well-known', 'assetlinks.json')}`);
+console.log(`[STATIC] Assetlinks exists = ${fs.existsSync(path.join(PUBLIC_DIR, '.well-known', 'assetlinks.json'))}`);
 
 // Keep HTML fresh (safe for XR flows)
 app.use((req, res, next) => {
@@ -383,13 +377,10 @@ const sendView = (name) => (_req, res) => {
 
   try {
     const html = fs.readFileSync(filePath, 'utf8');
-
-    // inject TURN config if function available
     const injected = (typeof injectTurnConfig === 'function')
       ? injectTurnConfig(html)
       : html;
 
-    // Make sure the result is HTML
     res.type('html').send(injected);
   } catch (err) {
     console.error('[sendView] error reading / sending view:', err);
