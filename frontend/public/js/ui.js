@@ -1374,177 +1374,82 @@ elBtnVideo.addEventListener('click', () => {
 let SR = null, rec = null, speechIntentLang = 'en-US';
 let conversationBuffer = '';
 
-function detectVoiceSupport() {
-    const info = {
-        hasSpeechRecognition: !!(window.SpeechRecognition || window.webkitSpeechRecognition),
-        hasMediaDevices: !!navigator.mediaDevices,
-        hasGetUserMedia: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
-        isSecureContext: window.isSecureContext,
-        userAgent: navigator.userAgent,
-        platform: navigator.platform
-    };
-    console.log('[Voice] Support Detection:', info);
-    return info;
-}
-
-async function requestMicrophonePermission() {
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach(track => track.stop());
-        return true;
-    } catch (err) {
-        console.error('[Voice] Microphone permission denied:', err);
-        return false;
-    }
-}
-
 function setupSR() {
     SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
-    if (!SR) {
-        console.error('[Voice] SpeechRecognition API not available');
-        return false;
-    }
+    if (!SR) return false;
     if (rec) return true;
+    rec = new SR();
+    rec.lang = speechIntentLang;
+    rec.continuous = true;
+    rec.interimResults = true;
 
-    try {
-        rec = new SR();
-        rec.lang = speechIntentLang;
-        rec.continuous = true;
-        rec.interimResults = true;
-        rec.maxAlternatives = 1;
+    rec.onresult = (e) => {
+        let interim = '';
+        let finalTxt = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+            const t = e.results[i][0].transcript.trim();
+            if (e.results[i].isFinal) finalTxt += (finalTxt ? ' ' : '') + t;
+            else interim += (interim ? ' ' : '') + t;
+        }
 
-        rec.onstart = () => {
-            console.log('[VoiceRec] Started successfully');
-        };
+        if (interim && recordingActive) {
+            elChip.textContent = `Listening: ${interim}`;
+            elChip.hidden = false;
+            if (orbUI) orbUI.updateResponse(interim, false);
+        }
 
-        rec.onresult = (e) => {
-            let interim = '';
-            let finalTxt = '';
-            for (let i = e.resultIndex; i < e.results.length; i++) {
-                const t = e.results[i][0].transcript.trim();
-                if (e.results[i].isFinal) finalTxt += (finalTxt ? ' ' : '') + t;
-                else interim += (interim ? ' ' : '') + t;
-            }
+        if (finalTxt) {
+            const finalLower = finalTxt.toLowerCase();
+            lastRecognizedCommand = finalLower;
+            elChip.textContent = `Heard: ${finalTxt}`;
+            elChip.hidden = false;
+            if (orbUI) orbUI.updateResponse(finalTxt, false);
 
-            if (interim && recordingActive) {
-                elChip.textContent = `Listening: ${interim}`;
-                elChip.hidden = false;
-                if (orbUI) orbUI.updateResponse(interim, false);
-            }
-
-            if (finalTxt) {
-                const finalLower = finalTxt.toLowerCase();
-                lastRecognizedCommand = finalLower;
-                elChip.textContent = `Heard: ${finalTxt}`;
-                elChip.hidden = false;
-                if (orbUI) orbUI.updateResponse(finalTxt, false);
-
-                if (/\bcreate\b/.test(finalLower)) {
-                    onStopRecordingNote();
-                    return;
-                } else if (recordingActive) {
-                    noteBuffer += (noteBuffer ? ' ' : '') + finalTxt;
-                    conversationBuffer += (conversationBuffer ? ' ' : '') + finalTxt;
-                } else {
-                    processVoiceCommand(finalLower);
-                }
-            }
-        };
-
-        rec.onerror = (ev) => {
-            const code = ev?.error || 'unknown';
-            console.log('[VoiceRec] Error:', code);
-
-            if (code === 'not-allowed' || code === 'service-not-allowed') {
-                msg('System', 'Microphone permission denied. Please allow microphone access in browser settings.');
-                isListening = false;
-                setStatus(isServerConnected);
-                if (orbUI) orbUI.syncVoiceState(false);
+            if (/\bcreate\b/.test(finalLower)) {
+                onStopRecordingNote();
                 return;
+            } else if (recordingActive) {
+                noteBuffer += (noteBuffer ? ' ' : '') + finalTxt;
+                conversationBuffer += (conversationBuffer ? ' ' : '') + finalTxt;
+            } else {
+                processVoiceCommand(finalLower);
             }
-
-            if (code === 'aborted' || code === 'no-speech' || code === 'audio-capture' || code === 'network') {
-                if (isListening && rec) {
-                    setTimeout(() => {
-                        if (isListening && rec) try { rec.start(); } catch { }
-                    }, 300);
-                }
-            }
-        };
-
-        rec.onend = () => {
-            console.log('[VoiceRec] onend fired, isListening:', isListening);
+        }
+    };
+    rec.onerror = (ev) => {
+        const code = ev?.error || 'unknown';
+        console.log('[VoiceRec] Error:', code);
+        if (code === 'aborted' || code === 'no-speech' || code === 'audio-capture' || code === 'network') {
             if (isListening && rec) {
                 setTimeout(() => {
-                    if (isListening && rec) {
-                        try { rec.start(); } catch (e) {
-                            console.warn('[VoiceRec] Restart failed:', e);
-                            setTimeout(() => {
-                                if (isListening && rec) try { rec.start(); } catch { }
-                            }, 500);
-                        }
-                    }
-                }, 100);
+                    if (isListening && rec) try { rec.start(); } catch { }
+                }, 300);
             }
-        };
-
-        return true;
-    } catch (err) {
-        console.error('[Voice] Failed to setup SpeechRecognition:', err);
-        return false;
-    }
+        }
+    };
+    rec.onend = () => {
+        console.log('[VoiceRec] onend fired, isListening:', isListening);
+        if (isListening && rec) {
+            setTimeout(() => {
+                if (isListening && rec) {
+                    try { rec.start(); } catch (e) {
+                        console.warn('[VoiceRec] Restart failed:', e);
+                        setTimeout(() => {
+                            if (isListening && rec) try { rec.start(); } catch { }
+                        }, 500);
+                    }
+                }
+            }, 100);
+        }
+    };
+    return true;
 }
 
-async function startVoiceRecognition() {
-    const support = detectVoiceSupport();
-
-    if (!support.isSecureContext) {
-        msg('System', 'Voice recognition requires HTTPS. Please access via https://');
-        return;
-    }
-
-    if (!support.hasMediaDevices || !support.hasGetUserMedia) {
-        msg('System', 'Microphone not supported on this device');
-        return;
-    }
-
-    if (!support.hasSpeechRecognition) {
-        const isAndroid = /android/i.test(support.userAgent);
-        const isChrome = /chrome/i.test(support.userAgent) && !/edg/i.test(support.userAgent);
-
-        if (isAndroid && !isChrome) {
-            msg('System', 'Voice recognition only works in Chrome on Android. Please use Chrome browser.');
-        } else if (isAndroid) {
-            msg('System', 'Voice recognition not available. Ensure Chrome is up to date and microphone permissions are granted.');
-        } else {
-            msg('System', 'Voice recognition not supported on this browser.');
-        }
-        return;
-    }
-
-    const hasMicPermission = await requestMicrophonePermission();
-    if (!hasMicPermission) {
-        msg('System', 'Microphone permission required. Please allow microphone access and try again.');
-        return;
-    }
-
-    if (!setupSR()) {
-        msg('System', 'Voice recognition setup failed. Please try again.');
-        return;
-    }
-
+function startVoiceRecognition() {
+    if (!setupSR()) { msg('System', 'Voice API not available in this browser'); return; }
     if (isListening) return;
     isListening = true;
-
-    try {
-        rec.start();
-        msg('System', 'Voice recognition started');
-    } catch (err) {
-        console.error('[Voice] Start failed:', err);
-        msg('System', 'Failed to start voice recognition. Please check microphone permissions.');
-        isListening = false;
-    }
-
+    try { rec.start(); msg('System', 'Voice recognition started'); } catch { msg('System', 'Failed to start voice'); }
     setStatus(isServerConnected);
     if (orbUI) orbUI.syncVoiceState(true);
 }
@@ -1872,8 +1777,6 @@ msg('System', "Disconnected. Tap 'Connect' or say 'connect' to join the server."
 
 // Load XR Device permissions once and apply read-only UI if needed
 if (typeof window !== 'undefined') {
-    detectVoiceSupport();
-
     loadDevicePermissionsOnce()
         .then(async () => {
             applyDeviceReadOnlyUI();
