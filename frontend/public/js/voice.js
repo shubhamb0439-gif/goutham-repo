@@ -57,6 +57,7 @@ export class VoiceController {
     this._rec = null;
     this._listening = false;
     this._lastPartialAt = 0;
+    this._lastResultIndex = 0;
 
     this._noteMode = false;
     this._noteBuffer = '';
@@ -85,6 +86,7 @@ export class VoiceController {
     try {
       this._rec.start();
       this._listening = true;
+      this._lastResultIndex = 0;
       this.onListenStateChange(true);
       return true;
     } catch (e) {
@@ -97,8 +99,9 @@ export class VoiceController {
 
   stop() {
     if (!this._rec) return;
-    try { this._rec.stop(); } catch { }
+    // Set listening to false BEFORE stopping to prevent auto-restart
     this._listening = false;
+    try { this._rec.stop(); } catch { }
     this.onListenStateChange(false);
     // If we were in note mode, finalize
     if (this._noteMode) this._emitStopNote();
@@ -129,21 +132,29 @@ export class VoiceController {
   }
 
   _onResult(e) {
-    // Aggregate interim + final across results block
+    // Guard: only process if we're actively listening
+    if (!this._listening) return;
+
+    // Process only new results (prevents duplicates on restart)
     let interim = '';
     let finalTxt = '';
+    let hasNewFinal = false;
 
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const res = e.results[i];
-      const txt = (res[0]?.transcript || '').toLowerCase().trim();
+      const txt = (res[0]?.transcript || '').trim();
       if (!txt) continue;
 
-      if (res.isFinal) finalTxt += (finalTxt ? ' ' : '') + txt;
-      else interim += (interim ? ' ' : '') + txt;
+      if (res.isFinal) {
+        finalTxt += (finalTxt ? ' ' : '') + txt.toLowerCase();
+        hasNewFinal = true;
+      } else {
+        interim += (interim ? ' ' : '') + txt.toLowerCase();
+      }
     }
 
     // Partial transcript throttling
-    if (interim) {
+    if (interim && this._listening) {
       const now = Date.now();
       if (now - this._lastPartialAt >= this.partialThrottleMs) {
         this._lastPartialAt = now;
@@ -158,7 +169,7 @@ export class VoiceController {
       }
     }
 
-    if (finalTxt) {
+    if (hasNewFinal && finalTxt && this._listening) {
       // Apply MRN formatting to final transcript
       const formattedFinal = this._formatMRN(finalTxt);
 
@@ -186,19 +197,38 @@ export class VoiceController {
 
   _onError(ev) {
     const code = ev?.error || ev?.message || 'speech_error';
-    this.onError(String(code));
 
-    // Auto-restart on recoverable errors
-    const recoverable = ['no-speech', 'aborted', 'audio-capture', 'network'];
+    // Only report non-aborted errors
+    if (code !== 'aborted') {
+      this.onError(String(code));
+    }
+
+    // Auto-restart on recoverable errors (but not if user stopped intentionally)
+    const recoverable = ['no-speech', 'audio-capture', 'network'];
     if (this._listening && recoverable.includes(code)) {
-      try { this._rec.start(); } catch { }
+      setTimeout(() => {
+        if (this._listening) {
+          try { this._rec.start(); } catch { }
+        }
+      }, 100);
     }
   }
 
   _onEnd() {
     // Chrome fires onend frequently; auto-restart if we want to keep listening
     if (this._listening) {
-      try { this._rec.start(); } catch { }
+      // Add small delay to prevent rapid restart cycles
+      setTimeout(() => {
+        if (this._listening && this._rec) {
+          try {
+            this._rec.start();
+          } catch (e) {
+            // If restart fails, update state
+            this._listening = false;
+            this.onListenStateChange(false);
+          }
+        }
+      }, 100);
     } else {
       this.onListenStateChange(false);
     }

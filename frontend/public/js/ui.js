@@ -12,7 +12,6 @@ import WebRtcStreamer from './device.js';
 import TelemetryReporter from './telemetry.js';
 import { Message, appendMessage } from './messages.js';
 import { OrbUIController } from './device-orb-ui.js';
-import { WakeListener } from './wake-listener.js';
 
 // Normalize XR IDs so that "1234" becomes "XR-1234", etc.
 function normalizeXrId(raw) {
@@ -1393,17 +1392,7 @@ function setupSR() {
             else interim += (interim ? ' ' : '') + t;
         }
 
-        if (_wakeSessionActive && (interim || finalTxt)) {
-            resetWakeSessionTimer();
-        }
-
         if (interim && recordingActive) {
-            elChip.textContent = `Listening: ${interim}`;
-            elChip.hidden = false;
-            if (orbUI) orbUI.updateResponse(interim, false);
-        }
-
-        if (interim && _wakeSessionActive && !recordingActive) {
             elChip.textContent = `Listening: ${interim}`;
             elChip.hidden = false;
             if (orbUI) orbUI.updateResponse(interim, false);
@@ -1479,24 +1468,15 @@ function stopVoiceRecognition() {
     if (recordingActive) finalizeRecordingNote();
     setStatus(isServerConnected);
     if (orbUI) orbUI.syncVoiceState(false);
-
-    if (wakeListener && !_wakeSessionActive) {
-        setTimeout(() => {
-            if (!isListening && !_wakeSessionActive && wakeListener) {
-                wakeListener.forceResume();
-            }
-        }, 700);
-    }
 }
 
 function processVoiceCommand(cmd) {
     const c = cmd.toLowerCase();
 
-    if (/\b(stop|bye|goodbye|thank you|thanks|sleep|shut up)\b.*\b(r[ehi]+a|rhea|reha|ria|reya)\b/.test(c) ||
-        /\b(r[ehi]+a|rhea|reha|ria|reya)\b.*\b(stop|bye|goodbye|thank you|thanks|sleep|shut up)\b/.test(c)) {
+    if (/\b(stop|bye|goodbye|thank you|thanks|sleep|shut up)\b/.test(c)) {
         msg('Voice', 'Goodbye!');
         if (orbUI) orbUI.updateResponse('Goodbye!', false);
-        endWakeSession();
+        stopVoiceRecognition();
         return;
     }
 
@@ -1554,11 +1534,7 @@ function processVoiceCommand(cmd) {
     if (/\bstart\b/.test(c)) { if (!streamActive) elBtnStream.click(); else msg('Voice', 'Stream already active.'); return; }
     if (/\bstop\b/.test(c)) { if (streamActive) elBtnStream.click(); else msg('Voice', 'Stream already stopped.'); return; }
 
-    if (_wakeSessionActive) {
-        msg('Voice', `Heard: ${cmd}`);
-    } else {
-        msg('Voice', `Unrecognized command: ${cmd}`);
-    }
+    msg('Voice', `Unrecognized command: ${cmd}`);
 }
 
 
@@ -1586,193 +1562,7 @@ if (elBtnVoice) {
     });
 }
 
-// ===================== Wake Listener ("Hey RHEA") =====================
-let wakeListener = null;
-const WAKE_LISTEN_DURATION_MS = 15000;
-let _wakeSessionTimer = null;
-let _wakeSessionActive = false;
-
-const GREETING_AUDIO_URL = '/public/audio/ElevenLabs_2026-03-03T18_39_37_Trinity_–_Calm_Female_Sleep_&_Affirmation_Voice_pvc_sp99_s50_sb71_se14_b_m2.mp3';
-
-function playGreetingAudio() {
-    return new Promise((resolve) => {
-        try {
-            const audio = new Audio(GREETING_AUDIO_URL);
-            let resolved = false;
-            const done = (ok) => {
-                if (resolved) return;
-                resolved = true;
-                resolve(ok);
-            };
-
-            audio.onended = () => {
-                console.log('[GREETING] Chime finished');
-                done(true);
-            };
-            audio.onerror = () => {
-                console.warn('[GREETING] Audio file failed, falling back to beep');
-                playTTSBeep();
-                done(false);
-            };
-
-            setTimeout(() => done(true), 15000);
-
-            audio.play().then(() => {
-                console.log('[GREETING] Playing greeting chime');
-            }).catch(() => {
-                console.warn('[GREETING] Autoplay blocked, falling back to beep');
-                playTTSBeep();
-                done(false);
-            });
-        } catch (e) {
-            console.warn('[GREETING] Error:', e);
-            playTTSBeep();
-            resolve(false);
-        }
-    });
-}
-
-function playTTSBeep() {
-    try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.frequency.value = 880;
-        osc.type = 'sine';
-        gain.gain.setValueAtTime(0.3, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
-        osc.start(ctx.currentTime);
-        osc.stop(ctx.currentTime + 0.3);
-        setTimeout(() => ctx.close(), 500);
-    } catch (e) {
-        console.warn('[TTS] Beep failed:', e);
-    }
-}
-
-function endWakeSession() {
-    if (!_wakeSessionActive) return;
-    _wakeSessionActive = false;
-    if (_wakeSessionTimer) {
-        clearTimeout(_wakeSessionTimer);
-        _wakeSessionTimer = null;
-    }
-    if (isListening) {
-        stopVoiceRecognition();
-    }
-    setTimeout(() => {
-        if (wakeListener && !_wakeSessionActive && !isListening) {
-            wakeListener.forceResume();
-        }
-    }, 600);
-}
-
-function resetWakeSessionTimer() {
-    if (!_wakeSessionActive) return;
-    if (_wakeSessionTimer) clearTimeout(_wakeSessionTimer);
-    _wakeSessionTimer = setTimeout(() => {
-        console.log('[WakeListener] Session timeout - no speech detected');
-        endWakeSession();
-    }, WAKE_LISTEN_DURATION_MS);
-}
-
-async function primeMicPermission() {
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach(t => t.stop());
-        console.log('[WakeListener] Mic permission primed');
-        return true;
-    } catch (e) {
-        console.warn('[WakeListener] Mic permission denied:', e.message);
-        return false;
-    }
-}
-
-async function initWakeListener() {
-    if (!WakeListener.isAvailable()) {
-        console.log('[WakeListener] Speech API not available; skipping.');
-        return;
-    }
-
-    await primeMicPermission();
-
-    wakeListener = new WakeListener({
-        wakePhrase: 'hey rhea',
-        onWake: (transcript) => {
-            console.log('[WakeListener] Activated by:', transcript);
-            if (orbUI) orbUI.updateResponse('Hey RHEA detected - listening...', false);
-
-            _wakeSessionActive = true;
-            wakeListener.pause();
-
-            (async () => {
-                const played = await playGreetingAudio();
-                console.log('[WakeListener] Greeting audio completed:', played);
-
-                if (!_wakeSessionActive) return;
-
-                await new Promise(r => setTimeout(r, played ? 200 : 500));
-
-                if (!_wakeSessionActive) return;
-                if (!isListening) {
-                    startVoiceRecognition();
-                }
-                resetWakeSessionTimer();
-            })();
-        },
-        onError: (err) => {
-            console.warn('[WakeListener] Error:', err);
-        }
-    });
-
-    const micBtn = document.getElementById('micButton');
-    if (micBtn) {
-        micBtn.addEventListener('touchstart', () => {
-            if (_wakeSessionActive) endWakeSession();
-            if (wakeListener) wakeListener.pause();
-        }, { passive: true });
-
-        micBtn.addEventListener('touchend', () => {
-            setTimeout(() => {
-                if (wakeListener && !_wakeSessionActive && !isListening) {
-                    wakeListener.forceResume();
-                }
-            }, 600);
-        }, { passive: true });
-
-        micBtn.addEventListener('touchcancel', () => {
-            setTimeout(() => {
-                if (wakeListener && !_wakeSessionActive && !isListening) {
-                    wakeListener.forceResume();
-                }
-            }, 600);
-        }, { passive: true });
-
-        micBtn.addEventListener('click', () => {
-            if (_wakeSessionActive) {
-                endWakeSession();
-                return;
-            }
-            if (wakeListener) {
-                if (isListening) {
-                    wakeListener.pause();
-                } else {
-                    setTimeout(() => {
-                        if (!isListening && !_wakeSessionActive) {
-                            wakeListener.forceResume();
-                        }
-                    }, 600);
-                }
-            }
-        });
-    }
-
-    wakeListener.start();
-    console.log('[WakeListener] Initialized and running.');
-}
-
-initWakeListener().catch(e => console.warn('[WakeListener] Init failed:', e));
+// ===================== Wake Listener removed =====================
 
 // Recording buttons
 function onStartRecordingNote() {
