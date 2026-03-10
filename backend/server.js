@@ -341,24 +341,25 @@ console.log('[MIDDLEWARE] Session enabled');
 
 // -------------------- UI routes (migrated from frontend/server.js) --------------------
 const FRONTEND_VIEWS = path.join(__dirname, '..', 'frontend', 'views');
+const FRONTEND_PUBLIC = path.join(__dirname, '..', 'frontend', 'public');
 const BACKEND_PUBLIC = path.join(__dirname, 'public');
 
-// Use frontend views if present, but ALWAYS use backend/public for static root
+// Use frontend views and frontend public for normal UI assets
 const VIEWS_DIR = fs.existsSync(FRONTEND_VIEWS) ? FRONTEND_VIEWS : BACKEND_PUBLIC;
-const PUBLIC_DIR = BACKEND_PUBLIC;
+const PUBLIC_DIR = fs.existsSync(FRONTEND_PUBLIC) ? FRONTEND_PUBLIC : BACKEND_PUBLIC;
 
-// Serve backend/public at root so /.well-known/assetlinks.json works automatically
+// Serve normal UI assets from frontend/public
 app.use(express.static(PUBLIC_DIR));
 
-// Optional: also keep /public URLs working if your app already uses them
+// Keep /public URLs working
 app.use('/public', express.static(PUBLIC_DIR));
 
-// Serve Digital Asset Links folder
-app.use('/.well-known', express.static(path.join(PUBLIC_DIR, '.well-known')));
+// Serve Digital Asset Links only from backend/public/.well-known
+app.use('/.well-known', express.static(path.join(BACKEND_PUBLIC, '.well-known')));
 
 console.log(`[STATIC] Serving UI assets from ${PUBLIC_DIR}`);
-console.log(`[STATIC] Assetlinks path = ${path.join(PUBLIC_DIR, '.well-known', 'assetlinks.json')}`);
-console.log(`[STATIC] Assetlinks exists = ${fs.existsSync(path.join(PUBLIC_DIR, '.well-known', 'assetlinks.json'))}`);
+console.log(`[STATIC] Assetlinks path = ${path.join(BACKEND_PUBLIC, '.well-known', 'assetlinks.json')}`);
+console.log(`[STATIC] Assetlinks exists = ${fs.existsSync(path.join(BACKEND_PUBLIC, '.well-known', 'assetlinks.json'))}`);
 
 // Keep HTML fresh (safe for XR flows)
 app.use((req, res, next) => {
