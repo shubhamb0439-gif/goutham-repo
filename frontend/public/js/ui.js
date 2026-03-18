@@ -691,10 +691,13 @@ function preferDesktop(listPairsOrPayload) {
     } else {
         connectedDesktops.push(...ids);
     }
-
     persistedState.connectedDesktops = connectedDesktops.slice();
     saveState();
+
+    // ✅ FIX: Update peer status when connected desktops change
+    updatePeerStatus();
 }
+
 
 
 
@@ -734,8 +737,12 @@ function createSignaling() {
                                     rememberXrName(id, nm);
                                 }
                             }
+
+                            // ✅ FIX: Update XR ID display after receiving full names
+                            updateXrIdDisplay();
                         } catch { }
                     });
+
                 }
             } catch { }
 
@@ -1033,7 +1040,12 @@ function createSignaling() {
                 if (id === expected) {
                     msg('System', `${displayNameFor(expected, null)} left the room.`);
                     connectedDesktops = connectedDesktops.filter(x => x.toUpperCase() !== expected);
+
+                    // ✅ FIX: Update peer status when peer leaves
+                    updatePeerStatus();
+
                     if (streamActive) {
+
                         streamActive = false;
                         streamer?.stopStreaming().catch(() => { });
                         setStatus(isServerConnected);
@@ -1047,7 +1059,12 @@ function createSignaling() {
                 const id = (payload?.xrId || DEFAULT_DESKTOP_ID).toUpperCase();
                 msg('System', `${displayNameFor(id, null)} disconnected.`);
                 connectedDesktops = connectedDesktops.filter(x => x.toUpperCase() !== id);
+
+                // ✅ FIX: Update peer status when desktop disconnects
+                updatePeerStatus();
+
                 if (streamActive) {
+
                     streamActive = false;
                     streamer?.stopStreaming().catch(() => { });
                     setStatus(isServerConnected);
@@ -1105,16 +1122,15 @@ function ensureStreamer() {
     return streamer;
 }
 
-
 // ----------------- Controls -----------------
-// Connect / Disconnect
-elBtnConnect.addEventListener('click', async () => {
+// Shared function for connect/disconnect logic (used by both button and badge)
+async function handleConnectDisconnect() {
     // 🔒 READ-only guard for XR Device
     if (!hasDeviceWritePermission()) {
         notifyReadOnlyDevice();
         return;
     }
-    // Prefer the client’s own state if available; fall back to our flag
+    // Prefer the client's own state if available; fall back to our flag
     const connected = (typeof signaling?.isConnectedNow === 'function')
         ? signaling.isConnectedNow()
         : !!isServerConnected;
@@ -1152,12 +1168,19 @@ elBtnConnect.addEventListener('click', async () => {
         window.XR_DEVICE_ID = '';
         pairedDesktopId = null;
 
+        // ✅ FIX: Clear XR ID display and peer status on disconnect
+        updateXrIdDisplay();
+        if (peerStatusDisplay) {
+            peerStatusDisplay.style.display = 'none';
+        }
+
         // Clear the input back to blank
         // if (elDeviceXrIdInput) elDeviceXrIdInput.value = '';
 
         // Clear local UI state (do NOT delete per-XR localStorage history)
         connectedDesktops = [];
         hadDesktops = false;
+
 
         // ✅ hard reset WebRTC + signaling objects so reconnect always streams cleanly
         try { streamer?.stopCamera?.(); } catch { }
@@ -1189,6 +1212,11 @@ elBtnConnect.addEventListener('click', async () => {
         ANDROID_XR_ID = normalized;          // will be XR-1234
         window.XR_DEVICE_ID = ANDROID_XR_ID;
         try { sessionStorage.setItem(LAST_XR_UI_KEY, ANDROID_XR_ID); } catch { }
+
+        // ✅ FIX: Update XR ID display immediately after setting
+        updateXrIdDisplay();
+
+
 
         // Load per-XR persisted state ONLY after explicit Connect
         // Reset in-memory state first
@@ -1238,8 +1266,10 @@ elBtnConnect.addEventListener('click', async () => {
     createSignaling();
     ensureStreamer();
     // bind preview element
-});
+}
 
+// Connect / Disconnect button
+elBtnConnect.addEventListener('click', handleConnectDisconnect);
 
 
 elBtnStream.addEventListener('click', async () => {
@@ -1583,15 +1613,8 @@ function processVoiceCommand(cmd) {
         return;
     }
 
-    if (/\bunmute\b/.test(c) || /\bunmute.*mic(rophone)?\b/.test(c)) {
-        if (micMuted) {
-            console.log('[Voice] Triggering: Unmute');
-            elBtnMute.click();
-        } else {
-            msg('Voice', 'Already unmuted.');
-        }
-        return;
-    }
+
+    // ✅ FIX: Check "mute" BEFORE "unmute" to avoid conflicts
     if (/\bmute\b/.test(c) && !/\bunmute\b/.test(c)) {
         if (!micMuted) {
             console.log('[Voice] Triggering: Mute');
@@ -1601,6 +1624,17 @@ function processVoiceCommand(cmd) {
         }
         return;
     }
+
+    if (/\bunmute\b/.test(c) || /\bunmute.*mic(rophone)?\b/.test(c)) {
+        if (micMuted) {
+            console.log('[Voice] Triggering: Unmute');
+            elBtnMute.click();
+        } else {
+            msg('Voice', 'Already unmuted.');
+        }
+        return;
+    }
+
 
     if (/\b(hide|turn off|disable).*(video|camera)\b/i.test(c) || /\b(video|camera).*(hide|off)\b/i.test(c)) {
         if (videoVisible) {
@@ -1622,8 +1656,8 @@ function processVoiceCommand(cmd) {
     }
 
     const isAudioCmd = /\bpause\b/.test(c) || /\bresume\b/.test(c) || /\bplay\b/.test(c) ||
-                       /\bstop.*(audio|play|music|sound)\b/.test(c) ||
-                       /\b(audio|play|music|sound).*stop\b/.test(c);
+        /\bstop.*(audio|play|music|sound)\b/.test(c) ||
+        /\b(audio|play|music|sound).*stop\b/.test(c);
 
     if (isAudioCmd || (/\bpause\b/.test(c) || /\bresume\b/.test(c))) {
         if (/\bpause\b/.test(c) || /\bstop.*(audio|play|music|sound)\b/.test(c)) {
@@ -1790,6 +1824,15 @@ if (elBtnAudio) {
     });
 }
 
+// Badge click handler for manual connect/disconnect toggle
+const elBadge = document.getElementById('badge');
+if (elBadge) {
+    elBadge.addEventListener('click', () => {
+        handleConnectDisconnect();
+    });
+}
+
+
 elBtnSend.addEventListener('click', () => {
     if (!hasDeviceWritePermission()) {
         notifyReadOnlyDevice();
@@ -1933,13 +1976,223 @@ if (typeof window !== 'undefined') {
 
                 if (!(elDeviceXrIdInput?.value || '').trim()) return;
 
+                // ✅ FIX: Small delay to ensure DOM is fully ready
+                await new Promise(resolve => setTimeout(resolve, 300));
+
                 console.log('[AUTO-XR][DEVICE] Auto-clicking Connect (reuses existing logic).');
-                elBtnConnect.click();
+                if (elBtnConnect && !elBtnConnect.disabled) {
+                    elBtnConnect.click();
+                    console.log('[AUTO-XR][DEVICE] Connect button clicked successfully.');
+                } else {
+                    console.warn('[AUTO-XR][DEVICE] Connect button not available or disabled.');
+                }
             } catch (e) {
                 console.warn('[AUTO-XR][DEVICE] Auto-connect skipped:', e);
             }
+
         })
         .catch((err) => {
             console.warn('[XRDEVICE] Permission bootstrap failed:', err);
         });
+}
+
+
+// ========== MANUAL CONTROL PANEL FUNCTIONALITY ==========
+// This section adds manual button controls while keeping voice commands working
+const manualStreamBtn = document.getElementById('manualStreamBtn');
+const manualMuteBtn = document.getElementById('manualMuteBtn');
+const manualVideoBtn = document.getElementById('manualVideoBtn');
+const xrIdDisplay = document.getElementById('xrIdDisplay');
+const visibleMsgList = document.getElementById('visibleMsgList');
+const visibleMsgInput = document.getElementById('visibleMsgInput');
+const visibleChkUrgent = document.getElementById('visibleChkUrgent');
+const visibleBtnSend = document.getElementById('visibleBtnSend');
+
+// ✅ FIX: Peer status elements
+const peerStatusDisplay = document.getElementById('peerStatusDisplay');
+const peerStatusText = document.getElementById('peerStatusText');
+
+
+// ✅ FIX: Update XR ID display to show FULL NAME instead of XR ID
+function updateXrIdDisplay() {
+    if (!xrIdDisplay) return;
+
+    if (ANDROID_XR_ID) {
+        // ✅ Priority 1: Show full name if available
+        const fullName = fullNameForXrId(ANDROID_XR_ID);
+        if (fullName && fullName !== ANDROID_XR_ID) {
+            xrIdDisplay.value = fullName;
+            console.log('[UI] XR ID Display updated to Full Name:', fullName);
+        } else {
+            // ✅ Fallback: Show XR ID if full name not yet available
+            xrIdDisplay.value = ANDROID_XR_ID;
+            console.log('[UI] XR ID Display updated to XR ID:', ANDROID_XR_ID);
+        }
+    } else {
+        xrIdDisplay.value = '';
+    }
+}
+
+// ✅ FIX: Update peer online/offline status
+function updatePeerStatus() {
+    if (!peerStatusDisplay || !peerStatusText) return;
+
+    const hasPeers = connectedDesktops.length > 0;
+
+    if (hasPeers) {
+        // Get the paired desktop or first available
+        const peerXrId = pairedDesktopId || connectedDesktops[0] || '';
+        const peerName = fullNameForXrId(peerXrId) || peerXrId;
+
+        peerStatusText.textContent = `${peerName} is Online`;
+        peerStatusDisplay.className = 'peer-status-display online';
+        peerStatusDisplay.style.display = 'block';
+        console.log('[UI] Peer status: Online -', peerName);
+    } else {
+        // No peers connected
+        const lastPeer = pairedDesktopId || 'Peer';
+        const peerName = fullNameForXrId(lastPeer) || lastPeer;
+
+        peerStatusText.textContent = `${peerName} is Offline`;
+        peerStatusDisplay.className = 'peer-status-display offline';
+        peerStatusDisplay.style.display = 'block';
+        console.log('[UI] Peer status: Offline -', peerName);
+    }
+}
+
+
+// Sync XR ID display on load and when it changes
+if (typeof window !== 'undefined') {
+    setTimeout(() => {
+        updateXrIdDisplay();
+
+        const observer = new MutationObserver(() => {
+            updateXrIdDisplay();
+        });
+
+        if (elDeviceXrIdInput) {
+            observer.observe(elDeviceXrIdInput, {
+                attributes: true,
+                attributeFilter: ['value']
+            });
+        }
+    }, 500);
+}
+
+// Manual Stream Button
+if (manualStreamBtn) {
+    manualStreamBtn.addEventListener('click', () => {
+        if (!hasDeviceWritePermission()) {
+            notifyReadOnlyDevice();
+            return;
+        }
+
+        elBtnStream.click();
+    });
+}
+
+// Manual Mute Button
+if (manualMuteBtn) {
+    manualMuteBtn.addEventListener('click', () => {
+        if (!hasDeviceWritePermission()) {
+            notifyReadOnlyDevice();
+            return;
+        }
+
+        elBtnMute.click();
+    });
+}
+
+// Manual Video Button
+if (manualVideoBtn) {
+    manualVideoBtn.addEventListener('click', () => {
+        if (!hasDeviceWritePermission()) {
+            notifyReadOnlyDevice();
+            return;
+        }
+
+        elBtnVideo.click();
+    });
+}
+
+// Sync button states with actual state
+function syncManualButtonStates() {
+    if (manualStreamBtn) {
+        if (streamActive) {
+            manualStreamBtn.classList.add('active');
+            manualStreamBtn.querySelector('span').textContent = 'Stop Stream';
+        } else {
+            manualStreamBtn.classList.remove('active');
+            manualStreamBtn.querySelector('span').textContent = 'Start Stream';
+        }
+    }
+
+    if (manualMuteBtn) {
+        if (micMuted) {
+            manualMuteBtn.classList.add('active');
+            manualMuteBtn.querySelector('span').textContent = 'Unmute';
+        } else {
+            manualMuteBtn.classList.remove('active');
+            manualMuteBtn.querySelector('span').textContent = 'Mute';
+        }
+    }
+
+    if (manualVideoBtn) {
+        if (!videoVisible) {
+            manualVideoBtn.classList.add('active');
+            manualVideoBtn.querySelector('span').textContent = 'Show Video';
+        } else {
+            manualVideoBtn.classList.remove('active');
+            manualVideoBtn.querySelector('span').textContent = 'Hide Video';
+        }
+    }
+}
+
+// Update manual button states periodically
+if (typeof window !== 'undefined') {
+    setInterval(syncManualButtonStates, 500);
+}
+
+// Messages - Sync visible messages with hidden message list
+if (elMsgList && visibleMsgList) {
+    const msgObserver = new MutationObserver(() => {
+        visibleMsgList.innerHTML = elMsgList.innerHTML;
+    });
+
+    msgObserver.observe(elMsgList, {
+        childList: true,
+        subtree: true,
+        characterData: true
+    });
+}
+
+// Visible Send Button - triggers the hidden send button
+if (visibleBtnSend) {
+    visibleBtnSend.addEventListener('click', () => {
+        if (!hasDeviceWritePermission()) {
+            notifyReadOnlyDevice();
+            return;
+        }
+
+        const text = (visibleMsgInput.value || '').trim();
+        if (!text) return;
+
+        elMsgInput.value = visibleMsgInput.value;
+        elChkUrgent.checked = visibleChkUrgent.checked;
+
+        elBtnSend.click();
+
+        visibleMsgInput.value = '';
+        visibleChkUrgent.checked = false;
+    });
+}
+
+// Allow Enter key to send message
+if (visibleMsgInput) {
+    visibleMsgInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            visibleBtnSend.click();
+        }
+    });
 }

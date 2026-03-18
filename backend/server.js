@@ -321,7 +321,9 @@ app.use(
       sameSite: IS_PROD ? 'none' : 'lax',
       secure: IS_PROD,
 
-      maxAge: 24 * 60 * 60 * 1000,
+      // ✅ Session expires when browser closes (session cookie - no maxAge)
+      // By NOT setting maxAge, the cookie becomes a session cookie
+      // that is automatically deleted when the browser closes
     },
   })
 );
@@ -2800,12 +2802,20 @@ app.post('/api/platform/logout', (req, res) => {
         console.error('[PLATFORM] Logout error:', err);
         return res.status(500).json({ ok: false, message: 'Logout failed' });
       }
+      // ✅ Clear the session cookie explicitly
+      res.clearCookie('connect.sid', {
+        httpOnly: true,
+        sameSite: IS_PROD ? 'none' : 'lax',
+        secure: IS_PROD,
+      });
       return res.json({ ok: true });
     });
   } else {
     return res.json({ ok: true });
   }
 });
+
+
 
 app.get('/platform/secure/ping', requireSuperAdmin, (req, res) => {
   const conn = getAzureSqlConnection();
@@ -6599,6 +6609,7 @@ io.on('connection', (socket) => {
 
 
 
+
   //------------changes made regarding dashabord ***----------------------------------------------------------------
   socket.on('disconnect', async (reason) => {
     if (socket.data?.clientType === 'cockpit' || socket.data?.clientType === 'dashboard') return;
@@ -6671,6 +6682,12 @@ io.on('connection', (socket) => {
         if (desktopClients.get(xrId) === socket) {
           desktopClients.delete(xrId);
           dlog('[disconnect] removed desktop client:', xrId);
+        }
+
+        // ✅ FIX: Notify cockpit in the room that peer has left (for Dock disconnect → Cockpit sync)
+        if (roomIdAtDisconnect) {
+          io.to(roomIdAtDisconnect).emit('peer_left', { xrId, roomId: roomIdAtDisconnect, reason: 'disconnect' });
+          dlog('[disconnect] emitted peer_left to room', { xrId, roomId: roomIdAtDisconnect });
         }
 
         // ✅ Broadcast device list ONLY to the pair room (after Socket.IO prunes rooms)

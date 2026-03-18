@@ -4,7 +4,8 @@
 <head>
     <meta charset="utf-8" />
     <title>XR Vision</title>
-    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
+    <meta name="viewport"
+        content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
     <meta name="theme-color" content="#000000" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -16,7 +17,9 @@
     <link rel="icon" href="/public/images/xr-logo-192.png" sizes="192x192" />
     <link rel="apple-touch-icon" href="/public/images/xr-logo-192.png" />
 
-    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Exo+2:wght@300;400;500&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Exo+2:wght@300;400;500&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="/public/css/device-orb.css" />
 </head>
 
@@ -29,34 +32,35 @@
             <svg viewBox="0 0 220 130" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <defs>
                     <linearGradient id="xg" x1="0" y1="0" x2="1" y2="1">
-                        <stop offset="0%" stop-color="#4fc3f7"/>
-                        <stop offset="40%" stop-color="#5c6bc0"/>
-                        <stop offset="100%" stop-color="#7b1fa2"/>
+                        <stop offset="0%" stop-color="#4fc3f7" />
+                        <stop offset="40%" stop-color="#5c6bc0" />
+                        <stop offset="100%" stop-color="#7b1fa2" />
                     </linearGradient>
                     <linearGradient id="rg" x1="0" y1="0" x2="1" y2="1">
-                        <stop offset="0%" stop-color="#5c6bc0"/>
-                        <stop offset="100%" stop-color="#7b1fa2"/>
+                        <stop offset="0%" stop-color="#5c6bc0" />
+                        <stop offset="100%" stop-color="#7b1fa2" />
                     </linearGradient>
                     <filter id="glow">
-                        <feGaussianBlur stdDeviation="1.5" result="blur"/>
-                        <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                        <feGaussianBlur stdDeviation="1.5" result="blur" />
+                        <feMerge>
+                            <feMergeNode in="blur" />
+                            <feMergeNode in="SourceGraphic" />
+                        </feMerge>
                     </filter>
                 </defs>
                 <path d="M5 8 L32 52 L5 96 L22 96 L40 65 L58 96 L75 96 L48 52 L75 8 L58 8 L40 39 L22 8 Z"
-                    fill="url(#xg)" filter="url(#glow)"/>
+                    fill="url(#xg)" filter="url(#glow)" />
                 <path d="M82 8 L82 96 L98 96 L98 60 L118 96 L136 96 L114 57 C126 53 133 44 133 32 C133 18 123 8 108 8 Z
-                         M98 20 L106 20 C114 20 118 25 118 32 C118 39 114 44 106 44 L98 44 Z"
-                    fill="url(#rg)" filter="url(#glow)"/>
-                <polyline points="140,52 152,52 158,34 164,70 170,42 176,62 182,52 210,52"
-                    stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
-                    fill="none" filter="url(#glow)"/>
-                <rect x="194" y="18" width="6" height="24" rx="2" fill="#00e5ff"/>
-                <rect x="186" y="26" width="22" height="6" rx="2" fill="#00e5ff"/>
-                <ellipse cx="185" cy="72" rx="32" ry="9"
-                    stroke="#00e5ff" stroke-width="1.8" fill="none" opacity=".7"
-                    transform="rotate(-12 185 72)"/>
-                <text x="48" y="120" font-family="'Orbitron',sans-serif" font-size="18"
-                    font-weight="600" fill="#ccc" letter-spacing="10" text-anchor="middle">VISION</text>
+                         M98 20 L106 20 C114 20 118 25 118 32 C118 39 114 44 106 44 L98 44 Z" fill="url(#rg)"
+                    filter="url(#glow)" />
+                <polyline points="140,52 152,52 158,34 164,70 170,42 176,62 182,52 210,52" stroke="#00e5ff"
+                    stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none" filter="url(#glow)" />
+                <rect x="194" y="18" width="6" height="24" rx="2" fill="#00e5ff" />
+                <rect x="186" y="26" width="22" height="6" rx="2" fill="#00e5ff" />
+                <ellipse cx="185" cy="72" rx="32" ry="9" stroke="#00e5ff" stroke-width="1.8" fill="none" opacity=".7"
+                    transform="rotate(-12 185 72)" />
+                <text x="48" y="120" font-family="'Orbitron',sans-serif" font-size="18" font-weight="600" fill="#ccc"
+                    letter-spacing="10" text-anchor="middle">VISION</text>
             </svg>
         </div>
 
@@ -65,6 +69,18 @@
             <div class="bdot off" id="bdot"></div>
             <span class="btxt off" id="btxt">DISCONNECTED</span>
         </div>
+
+        <!-- Logout button -->
+        <button class="logout-btn" id="logoutBtn">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M6 14H3C2.44772 14 2 13.5523 2 13V3C2 2.44772 2.44772 2 3 2H6" stroke="currentColor"
+                    stroke-width="1.5" stroke-linecap="round" />
+                <path d="M11 11L14 8M14 8L11 5M14 8H6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                    stroke-linejoin="round" />
+            </svg>
+            <span>Logout</span>
+        </button>
+
 
         <!-- ORB -->
         <div class="orb-root" id="orbVisual">
@@ -83,7 +99,7 @@
         <div class="resp" id="responseCard">
             <div class="pbtn" id="btnAudio" style="cursor:pointer;">
                 <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                    <path d="M2.5 1.5L11 6.5L2.5 11.5V1.5Z" fill="rgba(0,207,255,.92)"/>
+                    <path d="M2.5 1.5L11 6.5L2.5 11.5V1.5Z" fill="rgba(0,207,255,.92)" />
                 </svg>
             </div>
             <div class="rtxt" id="responseText">Your XR assistant response appears here...</div>
@@ -94,16 +110,77 @@
             <div class="mic-zone" id="micButton">
                 <div class="mic-btn" id="mb">
                     <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-                        <rect x="9" y="2" width="10" height="15" rx="5" fill="rgba(0,215,255,.92)"/>
-                        <path d="M4 13C4 18.5 8.5 23 14 23" stroke="rgba(0,215,255,.92)" stroke-width="2" stroke-linecap="round" fill="none"/>
-                        <path d="M24 13C24 18.5 19.5 23 14 23" stroke="rgba(0,215,255,.92)" stroke-width="2" stroke-linecap="round" fill="none"/>
-                        <line x1="14" y1="23" x2="14" y2="27" stroke="rgba(0,215,255,.92)" stroke-width="2" stroke-linecap="round"/>
-                        <line x1="10" y1="27" x2="18" y2="27" stroke="rgba(0,215,255,.92)" stroke-width="2" stroke-linecap="round"/>
+                        <rect x="9" y="2" width="10" height="15" rx="5" fill="rgba(0,215,255,.92)" />
+                        <path d="M4 13C4 18.5 8.5 23 14 23" stroke="rgba(0,215,255,.92)" stroke-width="2"
+                            stroke-linecap="round" fill="none" />
+                        <path d="M24 13C24 18.5 19.5 23 14 23" stroke="rgba(0,215,255,.92)" stroke-width="2"
+                            stroke-linecap="round" fill="none" />
+                        <line x1="14" y1="23" x2="14" y2="27" stroke="rgba(0,215,255,.92)" stroke-width="2"
+                            stroke-linecap="round" />
+                        <line x1="10" y1="27" x2="18" y2="27" stroke="rgba(0,215,255,.92)" stroke-width="2"
+                            stroke-linecap="round" />
                     </svg>
                 </div>
             </div>
             <div class="mic-lbl" id="micInstruction">Hold to <b>Speak</b></div>
         </div>
+
+        <!-- Manual Controls Panel -->
+        <div class="control-panel" id="controlPanel">
+            <!-- XR ID Display -->
+            <div class="xr-id-section">
+                <input type="text" id="xrIdDisplay" class="xr-id-display" readonly placeholder="XR-ID" />
+                <!-- ✅ FIX: Peer Online/Offline Status -->
+                <div id="peerStatusDisplay" class="peer-status-display" style="display: none;">
+                    <span id="peerStatusText"></span>
+                </div>
+            </div>
+
+
+
+
+            <!-- Manual Control Buttons -->
+            <div class="manual-controls">
+                <button class="control-btn" id="manualStreamBtn" data-action="stream">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" />
+                        <circle cx="8" cy="8" r="3" fill="currentColor" />
+                    </svg>
+                    <span>Start Stream</span>
+                </button>
+
+                <button class="control-btn" id="manualMuteBtn" data-action="mute">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <path d="M8 2v12M5 5l6 6M11 5l-6 6" stroke="currentColor" stroke-width="1.5"
+                            stroke-linecap="round" />
+                    </svg>
+                    <span>Mute</span>
+                </button>
+
+                <button class="control-btn" id="manualVideoBtn" data-action="video">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <rect x="2" y="4" width="9" height="8" rx="1" stroke="currentColor" stroke-width="1.5" />
+                        <path d="M11 6l3-2v8l-3-2" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                    </svg>
+                    <span>Hide Video</span>
+                </button>
+            </div>
+
+            <!-- Messages Section -->
+            <div class="messages-section">
+                <div class="messages-header">Messages</div>
+                <div class="messages-list" id="visibleMsgList"></div>
+                <div class="message-input-section">
+                    <input type="text" id="visibleMsgInput" class="msg-input" placeholder="Type a message..." />
+                    <label class="urgent-checkbox">
+                        <input type="checkbox" id="visibleChkUrgent" />
+                        <span>Urgent</span>
+                    </label>
+                    <button class="send-btn" id="visibleBtnSend">Send</button>
+                </div>
+            </div>
+        </div>
+
 
         <div class="toast" id="toast"></div>
 
@@ -174,6 +251,62 @@
             deferredPrompt = null;
         });
     </script>
+
+    <!-- ✅ MANUAL LOGOUT: Logout button handler -->
+    <script>
+        // Manual logout button click handler
+        const logoutBtn = document.getElementById('logoutBtn');
+        if (logoutBtn) {
+            logoutBtn.addEventListener('click', async function () {
+                try {
+                    console.log('[DEVICE] Manual logout initiated');
+
+                    // ✅ FIX: Clear sessionStorage BEFORE logout to prevent stale XR ID
+                    try {
+                        sessionStorage.removeItem('XR_DEVICE_LAST_XR_ID_UI');
+                        sessionStorage.removeItem('xr-device-id');
+                        console.log('[DEVICE] SessionStorage cleared on logout');
+                    } catch (e) {
+                        console.warn('[DEVICE] Failed to clear sessionStorage:', e);
+                    }
+
+                    // Call logout API
+                    const response = await fetch('/api/platform/logout', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include'
+                    });
+
+                    const data = await response.json();
+
+                    if (data.ok) {
+                        console.log('[DEVICE] Logout successful, redirecting to login page');
+                        // Redirect to platform login page
+                        window.location.href = '/platform';
+                    } else {
+                        console.error('[DEVICE] Logout failed:', data.message);
+                        // Still redirect to login page
+                        window.location.href = '/platform';
+                    }
+                } catch (err) {
+                    console.error('[DEVICE] Logout error:', err);
+
+                    // ✅ FIX: Clear sessionStorage even if logout API fails
+                    try {
+                        sessionStorage.removeItem('XR_DEVICE_LAST_XR_ID_UI');
+                        sessionStorage.removeItem('xr-device-id');
+                    } catch (e) {
+                        console.warn('[DEVICE] Failed to clear sessionStorage:', e);
+                    }
+
+                    // Still redirect to login page
+                    window.location.href = '/platform';
+                }
+            });
+        }
+    </script>
+
+
 </body>
 
 </html>

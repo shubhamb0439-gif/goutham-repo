@@ -966,14 +966,20 @@
 
 
     if (devices.length === 0) {
-      state.pendingEmptyDeviceListTimer = setTimeout(() => {
-        state.lastRenderedDeviceKey = '';
-        showNoDevices();
-        updateConnectionStatus('device_list', []);
+      // ✅ FIX: Immediately update lastRenderedDeviceKey to prevent stale UI
+      state.lastRenderedDeviceKey = '';
+
+      // ✅ FIX: Clear UI immediately without delay when going from devices → empty
+      if (state.pendingEmptyDeviceListTimer) {
+        clearTimeout(state.pendingEmptyDeviceListTimer);
         state.pendingEmptyDeviceListTimer = null;
-      }, CONST.EMPTY_DEVICE_DELAY_MS);
+      }
+
+      showNoDevices();
+      updateConnectionStatus('device_list', []);
       return;
     }
+
 
     state.lastRenderedDeviceKey = nextKey;
     dom.deviceList.innerHTML = '';
@@ -3003,10 +3009,10 @@
 
       const rawVal = state.latestSoapNote?.[section];
       const contentText = Array.isArray(rawVal)
-      ? rawVal.join('\n')
-      : typeof rawVal === 'string'
-      ? rawVal
-      : '';
+        ? rawVal.join('\n')
+        : typeof rawVal === 'string'
+          ? rawVal
+          : '';
       box.value = contentText;
       autoExpandTextarea(box);
 

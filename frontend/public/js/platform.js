@@ -308,41 +308,27 @@ function showToast(message, type = 'success') {
 }
 
 async function checkSession() {
-  try {
-    const response = await fetch('/api/platform/me', {
-      method: 'GET',
-      credentials: 'include',
-    });
-    const data = await response.json();
-
-    if (data.ok) {
-      // set currentUser for ALL roles
-      currentUser = data;
-      await showDashboard(data.email);
-
-
-      // Only SuperAdmin should load create-user lookup options
-      // Only SuperAdmin should load create-user lookup options
-      if (isCurrentUserSuperAdmin() && typeof refreshCreateUserFormOptionsGlobal === 'function') {
-        refreshCreateUserFormOptionsGlobal();
-      }
-
-
-
-    } else {
-      showLoginForm();
-    }
-  } catch (err) {
-    console.error('Session check failed:', err);
-    showLoginForm();
-  }
+  // ✅ ALWAYS show login page when visiting /platform
+  // This prevents providers from seeing the dashboard
+  // Users must login to access /device or dashboard
+  showLoginForm();
 }
 
 
 function showLoginForm() {
+  // ✅ FIX: Clear sessionStorage when showing login form for clean slate
+  try {
+    sessionStorage.removeItem('XR_DEVICE_LAST_XR_ID_UI');
+    sessionStorage.removeItem('xr-device-id');
+    console.log('[PLATFORM] SessionStorage cleared on showLoginForm');
+  } catch (e) {
+    console.warn('[PLATFORM] Failed to clear sessionStorage:', e);
+  }
+
   loginFormContainer.classList.remove('hidden');
   dashboardContent.classList.add('hidden');
 }
+
 
 async function showDashboard(email) {
   loginFormContainer.classList.add('hidden');
@@ -2138,6 +2124,12 @@ if (loginForm) {
 
       if (response.ok && data.ok) {
         currentUser = data;
+
+        // Check if user is a Provider - redirect to /device
+        if (data.persona && data.persona.toLowerCase() === 'provider') {
+          window.location.href = '/device';
+          return;
+        }
         await showDashboard(data.email);
         document.getElementById('email').value = '';
         document.getElementById('password').value = '';
@@ -2168,14 +2160,34 @@ if (logoutBtn) {
         method: 'POST',
         credentials: 'include',
       });
+
+      // ✅ FIX: Clear sessionStorage to prevent stale XR ID on next login
+      try {
+        sessionStorage.removeItem('XR_DEVICE_LAST_XR_ID_UI');
+        sessionStorage.removeItem('xr-device-id');
+        console.log('[PLATFORM] SessionStorage cleared on logout');
+      } catch (e) {
+        console.warn('[PLATFORM] Failed to clear sessionStorage:', e);
+      }
+
       currentUser = null;
       showLoginForm();
     } catch (err) {
       console.error('Logout error:', err);
+
+      // ✅ FIX: Clear sessionStorage even if logout API fails
+      try {
+        sessionStorage.removeItem('XR_DEVICE_LAST_XR_ID_UI');
+        sessionStorage.removeItem('xr-device-id');
+      } catch (e) {
+        console.warn('[PLATFORM] Failed to clear sessionStorage:', e);
+      }
+
       showLoginForm();
     }
   });
 }
+
 
 function switchView(viewName) {
   document.querySelectorAll('.view-content').forEach(view => {

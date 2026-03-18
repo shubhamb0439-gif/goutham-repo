@@ -263,3 +263,292 @@ html,body{
 }
 
 .hidden-controls{display:none!important;}
+
+/* ✅ Logout button styles */
+.logout-btn{
+  position:absolute;
+  top:68px;
+  right:16px;
+  z-index:20;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  background:rgba(0,0,0,.5);
+  border:1px solid rgba(239,68,68,.5);
+  border-radius:20px;
+  padding:6px 14px 6px 12px;
+  backdrop-filter:blur(10px);
+  cursor:pointer;
+  color:#ef4444;
+  font-family:'Exo 2',sans-serif;
+  font-size:13px;
+  font-weight:500;
+  transition:all 0.3s ease;
+}
+.logout-btn:hover{
+  background:rgba(239,68,68,.15);
+  border-color:rgba(239,68,68,.8);
+  box-shadow:0 0 12px rgba(239,68,68,.3);
+  transform:translateY(-1px);
+}
+.logout-btn:active{
+  transform:translateY(0);
+  box-shadow:0 0 8px rgba(239,68,68,.2);
+}
+.logout-btn svg{
+  width:16px;
+  height:16px;
+  color:#ef4444;
+}
+
+/* ========== Manual Control Panel ========== */
+.control-panel{
+  position:absolute;
+  bottom:0;
+  left:0;
+  right:0;
+  z-index:15;
+  background:rgba(10,10,20,0.95);
+  border-top:1px solid rgba(0,210,255,0.3);
+  backdrop-filter:blur(20px);
+  padding:16px;
+  max-height:50vh;
+  overflow-y:auto;
+}
+
+.xr-id-section{
+  margin-bottom:12px;
+}
+
+.xr-id-display{
+  width:100%;
+  background:rgba(0,210,255,0.1);
+  border:1px solid rgba(0,210,255,0.4);
+  border-radius:8px;
+  padding:10px 14px;
+  font-family:'Orbitron',sans-serif;
+  font-size:15px;
+  font-weight:600;
+  color:#00d2ff;
+  text-align:center;
+  letter-spacing:2px;
+  outline:none;
+  cursor:default;
+}
+
+/* ✅ FIX: Peer Status Display */
+.peer-status-display{
+  margin-top:8px;
+  padding:8px 12px;
+  border-radius:6px;
+  font-family:'Orbitron',sans-serif;
+  font-size:13px;
+  font-weight:500;
+  text-align:center;
+  letter-spacing:1px;
+  transition:all 0.3s ease;
+}
+
+.peer-status-display.online{
+  background:rgba(16,185,129,0.15);
+  border:1px solid rgba(16,185,129,0.4);
+  color:#10b981;
+}
+
+.peer-status-display.offline{
+  background:rgba(239,68,68,0.15);
+  border:1px solid rgba(239,68,68,0.4);
+  color:#ef4444;
+}
+
+.manual-controls{
+
+  display:flex;
+  gap:8px;
+  margin-bottom:14px;
+  flex-wrap:wrap;
+}
+
+.control-btn{
+  flex:1;
+  min-width:100px;
+  background:rgba(0,210,255,0.15);
+  border:1px solid rgba(0,210,255,0.4);
+  border-radius:8px;
+  padding:10px 12px;
+  font-family:'Exo 2',sans-serif;
+  font-size:12px;
+  font-weight:500;
+  color:#00d2ff;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  cursor:pointer;
+  transition:all 0.2s ease;
+  outline:none;
+}
+
+.control-btn:hover{
+  background:rgba(0,210,255,0.25);
+  border-color:rgba(0,210,255,0.6);
+  transform:translateY(-1px);
+}
+
+.control-btn:active{
+  transform:translateY(0);
+}
+
+.control-btn.active{
+  background:rgba(0,210,255,0.3);
+  border-color:#00d2ff;
+  box-shadow:0 0 12px rgba(0,210,255,0.4);
+}
+
+.control-btn svg{
+  width:16px;
+  height:16px;
+  color:currentColor;
+}
+
+.messages-section{
+  background:rgba(0,0,0,0.4);
+  border:1px solid rgba(0,210,255,0.3);
+  border-radius:8px;
+  padding:12px;
+}
+
+.messages-header{
+  font-family:'Orbitron',sans-serif;
+  font-size:12px;
+  font-weight:600;
+  color:#00d2ff;
+  letter-spacing:1.5px;
+  margin-bottom:8px;
+  text-transform:uppercase;
+}
+
+.messages-list{
+  background:rgba(0,0,0,0.3);
+  border:1px solid rgba(0,210,255,0.2);
+  border-radius:6px;
+  padding:10px;
+  min-height:100px;
+  max-height:150px;
+  overflow-y:auto;
+  margin-bottom:10px;
+  font-size:11px;
+  color:#ccc;
+  line-height:1.5;
+}
+
+.messages-list::-webkit-scrollbar{
+  width:4px;
+}
+
+.messages-list::-webkit-scrollbar-track{
+  background:rgba(0,0,0,0.2);
+}
+
+.messages-list::-webkit-scrollbar-thumb{
+  background:rgba(0,210,255,0.4);
+  border-radius:2px;
+}
+
+.message-input-section{
+  display:flex;
+  gap:8px;
+  align-items:center;
+}
+
+.msg-input{
+  flex:1;
+  background:rgba(0,210,255,0.1);
+  border:1px solid rgba(0,210,255,0.3);
+  border-radius:6px;
+  padding:8px 12px;
+  font-family:'Exo 2',sans-serif;
+  font-size:12px;
+  color:#fff;
+  outline:none;
+}
+
+.msg-input:focus{
+  border-color:rgba(0,210,255,0.6);
+  background:rgba(0,210,255,0.15);
+}
+
+.msg-input::placeholder{
+  color:rgba(255,255,255,0.4);
+}
+
+.urgent-checkbox{
+  display:flex;
+  align-items:center;
+  gap:4px;
+  font-size:11px;
+  color:#ccc;
+  cursor:pointer;
+  white-space:nowrap;
+}
+
+.urgent-checkbox input[type="checkbox"]{
+  width:14px;
+  height:14px;
+  cursor:pointer;
+}
+
+.send-btn{
+  background:rgba(0,210,255,0.2);
+  border:1px solid rgba(0,210,255,0.5);
+  border-radius:6px;
+  padding:8px 16px;
+  font-family:'Exo 2',sans-serif;
+  font-size:12px;
+  font-weight:600;
+  color:#00d2ff;
+  cursor:pointer;
+  transition:all 0.2s ease;
+  outline:none;
+  white-space:nowrap;
+}
+
+.send-btn:hover{
+  background:rgba(0,210,255,0.3);
+  border-color:#00d2ff;
+}
+
+.send-btn:active{
+  transform:scale(0.98);
+}
+
+.message-item{
+  margin-bottom:8px;
+  padding:6px;
+  background:rgba(0,210,255,0.05);
+  border-left:2px solid rgba(0,210,255,0.4);
+  border-radius:4px;
+}
+
+.message-item.urgent{
+  border-left-color:#ef4444;
+  background:rgba(239,68,68,0.1);
+}
+
+.message-sender{
+  font-weight:600;
+  color:#00d2ff;
+  font-size:10px;
+  margin-bottom:2px;
+}
+
+.message-text{
+  color:#fff;
+  font-size:11px;
+}
+
+.message-time{
+  font-size:9px;
+  color:#888;
+  margin-top:2px;
+}
