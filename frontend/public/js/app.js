@@ -1000,7 +1000,8 @@ function initSocket() {
         console.log('[PAIR] peer_left', xrId, roomId);
 
         if (currentRoom === roomId) {
-            addSystemMessage(`${xrId} left the room.`);
+            const peerDisplayName = fullNameForXrId(xrId) || xrId;
+            addSystemMessage(`${peerDisplayName} is Offline`);
             currentRoom = null;
             pairedPeerId = null;
 

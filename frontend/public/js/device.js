@@ -494,8 +494,27 @@ export class WebRtcStreamer {
       );
     };
 
-    // (Receiver-side events not used on the sender; kept for completeness)
-    pc.ontrack = (ev) => console.debug(`[${key}] ontrack`, ev.streams?.[0]);
+    pc.ontrack = (ev) => {
+      console.debug(`[${key}] ontrack`, ev.streams?.[0]);
+      const stream = ev.streams?.[0];
+      if (!stream) return;
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) return;
+      try {
+        let remoteAudio = document.getElementById('__xr_remote_audio__');
+        if (!remoteAudio) {
+          remoteAudio = document.createElement('audio');
+          remoteAudio.id = '__xr_remote_audio__';
+          remoteAudio.autoplay = true;
+          remoteAudio.style.display = 'none';
+          document.body.appendChild(remoteAudio);
+        }
+        if (remoteAudio.srcObject !== stream) {
+          remoteAudio.srcObject = stream;
+          remoteAudio.play().catch(() => { });
+        }
+      } catch { }
+    };
 
     // Ensure the initial offer contains an m=audio section so first Unmute works without renegotiation.
     try {
@@ -503,7 +522,7 @@ export class WebRtcStreamer {
         && pc.getTransceivers().some(t => t?.receiver?.track?.kind === 'audio');
 
       if (!hasAudio && typeof pc.addTransceiver === 'function') {
-        pc.addTransceiver('audio', { direction: 'sendonly' });
+        pc.addTransceiver('audio', { direction: 'sendrecv' });
       }
     } catch { }
 

@@ -21,26 +21,7 @@ export class OrbUIController {
   }
 
   _detectMobile() {
-    const ua = navigator.userAgent || '';
-    const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua) &&
-      !(/Windows NT|Macintosh|CrOS/i.test(ua));
-
-    // Also check for touch support
-    const hasTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
-
-    // Check if running as PWA/TWA
-    const isPWA = window.matchMedia('(display-mode: standalone)').matches ||
-                  window.navigator.standalone ||
-                  document.referrer.includes('android-app://');
-
-    console.log('[OrbUI] Device detection:', {
-      isMobileDevice,
-      hasTouch,
-      isPWA,
-      userAgent: ua.substring(0, 50) + '...'
-    });
-
-    return isMobileDevice || (hasTouch && isPWA);
+    return false;
   }
 
   _initAudioContext() {
@@ -55,19 +36,12 @@ export class OrbUIController {
       return;
     }
 
-    if (this.isMobile) {
-      this._setupMobileEvents();
-      if (this.micInstruction) {
-        this.micInstruction.innerHTML = 'Hold to <b>Speak</b>';
-      }
-    } else {
-      this._setupDesktopEvents();
-      if (this.micInstruction) {
-        this.micInstruction.innerHTML = 'Click to <b>Speak</b>';
-      }
+    this._setupDesktopEvents();
+    if (this.micInstruction) {
+      this.micInstruction.innerHTML = 'Click to <b>Speak</b>';
     }
 
-    console.log('[OrbUI] Initialized in', this.isMobile ? 'MOBILE' : 'DESKTOP', 'mode');
+    console.log('[OrbUI] Initialized in TAP-TOGGLE mode (all platforms)');
   }
 
   _setupDesktopEvents() {
@@ -219,8 +193,6 @@ export class OrbUIController {
     if (this.micInstruction) {
       if (active) {
         this.micInstruction.innerHTML = '<b>Listening...</b>';
-      } else if (this.isMobile) {
-        this.micInstruction.innerHTML = 'Hold to <b>Speak</b>';
       } else {
         this.micInstruction.innerHTML = 'Click to <b>Speak</b>';
       }
