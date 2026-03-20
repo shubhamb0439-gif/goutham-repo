@@ -1,0 +1,10 @@
+{
+  "appId": "com.oghealthcare.xrvision",
+  "appName": "XR Vision",
+  "webDir": "frontend/public",
+  "server": {
+    "url": "https://xr-messaging-geexbheshbghhab7.centralindia-01.azurewebsites.net",
+    "cleartext": false,
+    "appStartPath": "/platform"
+  }
+}
