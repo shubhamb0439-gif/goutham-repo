@@ -358,7 +358,13 @@ export class SignalingClient {
   }
 
 
-  _onDeviceList(arr) {
+  _onDeviceList(payload) {
+    let arr = payload;
+
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      arr = payload.devices || [];
+    }
+
     if (!Array.isArray(arr)) return;
     const list = [];
     let desktopOnline = false;
