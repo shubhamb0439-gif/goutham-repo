@@ -150,7 +150,31 @@
     <!-- Your app (served by Express/static) -->
     <script src="/public/js/dashboard.js" defer></script>
 
+    <!-- Platform logout cross-tab listener -->
+    <script>
+      (function () {
+        function handleXrLogout() {
+          console.log('[HUB-DASHBOARD] Platform logout detected, closing tab');
+          try { window.close(); } catch (e) {}
+          setTimeout(function () { window.location.href = '/platform'; }, 300);
+        }
 
+        try {
+          if (typeof BroadcastChannel !== 'undefined') {
+            var ch = new BroadcastChannel('xr_platform_auth');
+            ch.onmessage = function (e) {
+              if (e.data && e.data.type === 'xr_logout') handleXrLogout();
+            };
+          } else {
+            window.addEventListener('storage', function (e) {
+              if (e.key === 'xr_logout_signal') handleXrLogout();
+            });
+          }
+        } catch (err) {
+          console.warn('[HUB-DASHBOARD] Logout listener setup failed:', err);
+        }
+      })();
+    </script>
 
 </body>
 
