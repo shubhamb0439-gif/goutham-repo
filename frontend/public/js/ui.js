@@ -300,6 +300,34 @@ function emitSafe(event, data) {
 }
 
 // Audio playback helper functions
+
+const PLAY_SVG = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2.5 1.5L11 6.5L2.5 11.5V1.5Z" fill="currentColor"/></svg>';
+const PAUSE_SVG = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><rect x="2" y="2" width="3" height="9" rx="1" fill="currentColor"/><rect x="8" y="2" width="3" height="9" rx="1" fill="currentColor"/></svg>';
+
+function setAudioBtnState(btn, state) {
+    if (!btn) return;
+    const lbl = document.getElementById('audioLabel');
+    if (state === 'playing') {
+        btn.querySelector('svg')?.remove();
+        btn.insertAdjacentHTML('afterbegin', PAUSE_SVG);
+        btn.disabled = false;
+        btn.classList.add('playing');
+        if (lbl) lbl.textContent = 'Pause';
+    } else if (state === 'paused') {
+        btn.querySelector('svg')?.remove();
+        btn.insertAdjacentHTML('afterbegin', PLAY_SVG);
+        btn.disabled = false;
+        btn.classList.remove('playing');
+        if (lbl) lbl.textContent = 'Play';
+    } else {
+        btn.querySelector('svg')?.remove();
+        btn.insertAdjacentHTML('afterbegin', PLAY_SVG);
+        btn.disabled = true;
+        btn.classList.remove('playing');
+        if (lbl) lbl.textContent = 'Audio';
+    }
+}
+
 function resetAudioState() {
     if (currentAudio) {
         currentAudio.pause();
@@ -327,10 +355,7 @@ function startAudioTimeout() {
         const btnAudio = document.getElementById('btnAudio');
         const audioLabel = document.getElementById('audioLabel');
         if (btnAudio) {
-            btnAudio.innerHTML = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2.5 1.5L11 6.5L2.5 11.5V1.5Z" fill="rgba(0,207,255,.92)"/></svg>';
-            btnAudio.disabled = true;
-            btnAudio.style.opacity = '0.38';
-            btnAudio.style.cursor = 'not-allowed';
+            setAudioBtnState(btnAudio, 'idle');
             if (audioLabel) audioLabel.textContent = 'Audio';
         }
         notifyCockpitPlaybackComplete();
@@ -902,14 +927,9 @@ function createSignaling() {
 
                 // Update button to Pause state (audio will autoplay)
                 const btnAudio = document.getElementById('btnAudio');
-                const audioLabel = document.getElementById('audioLabel');
                 console.log('🔘 [VISION DEVICE] Button before update:', btnAudio ? 'found' : 'NULL');
                 if (btnAudio) {
-                    btnAudio.disabled = false;
-                    btnAudio.style.opacity = '1';
-                    btnAudio.style.cursor = 'pointer';
-                    btnAudio.innerHTML = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><rect x="2" y="2" width="3" height="9" rx="1" fill="rgba(0,207,255,.92)"/><rect x="8" y="2" width="3" height="9" rx="1" fill="rgba(0,207,255,.92)"/></svg>';
-                    if (audioLabel) audioLabel.textContent = 'Pause';
+                    setAudioBtnState(btnAudio, 'playing');
                     console.log('✅ [VISION DEVICE] Audio button updated to Pause state');
                 } else {
                     console.error('❌ [VISION DEVICE] btnAudio element not found!');
@@ -919,13 +939,7 @@ function createSignaling() {
                 currentAudio.onended = () => {
                     console.log('✅ [VISION DEVICE] Playback finished');
                     resetAudioState();
-                    if (btnAudio) {
-                        btnAudio.innerHTML = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2.5 1.5L11 6.5L2.5 11.5V1.5Z" fill="rgba(0,207,255,.92)"/></svg>';
-                        btnAudio.disabled = true;
-                        btnAudio.style.opacity = '0.38';
-                        btnAudio.style.cursor = 'not-allowed';
-                        if (audioLabel) audioLabel.textContent = 'Audio';
-                    }
+                    setAudioBtnState(document.getElementById('btnAudio'), 'idle');
                     notifyCockpitPlaybackComplete();
                 };
 
@@ -940,13 +954,8 @@ function createSignaling() {
                         clearTimeout(audioTimeoutId);
                         audioTimeoutId = null;
                     }
-                    const btn = document.getElementById('btnAudio');
-                    const lbl = document.getElementById('audioLabel');
-                    if (btn) {
-                        btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><rect x="2" y="2" width="3" height="9" rx="1" fill="rgba(0,207,255,.92)"/><rect x="8" y="2" width="3" height="9" rx="1" fill="rgba(0,207,255,.92)"/></svg>';
-                        if (lbl) lbl.textContent = 'Pause';
-                        console.log('✅ [VISION DEVICE] onplay: Button set to Pause');
-                    }
+                    setAudioBtnState(document.getElementById('btnAudio'), 'playing');
+                    console.log('✅ [VISION DEVICE] onplay: Button set to Pause');
                     try {
                         if (signaling?.socket?.connected) {
                             signaling.socket.emit('audio_state_changed', {
@@ -967,13 +976,8 @@ function createSignaling() {
                         isAudioPaused = true;
                         isAudioPlaying = false;
                         startAudioTimeout();
-                        const btn = document.getElementById('btnAudio');
-                        const lbl = document.getElementById('audioLabel');
-                        if (btn) {
-                            btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2.5 1.5L11 6.5L2.5 11.5V1.5Z" fill="rgba(0,207,255,.92)"/></svg>';
-                            if (lbl) lbl.textContent = 'Play';
-                            console.log('✅ [VISION DEVICE] onpause: Button set to Play');
-                        }
+                        setAudioBtnState(document.getElementById('btnAudio'), 'paused');
+                        console.log('✅ [VISION DEVICE] onpause: Button set to Play');
                         try {
                             if (signaling?.socket?.connected) {
                                 signaling.socket.emit('audio_state_changed', {
@@ -998,16 +1002,8 @@ function createSignaling() {
                     console.error('❌ [VISION DEVICE] Playback error:', err);
                     msg('System', '⚠️ Failed to play audio: ' + err.message);
                     isAudioPlaying = false;
-                    const btn = document.getElementById('btnAudio');
-                    const lbl = document.getElementById('audioLabel');
-                    if (btn) {
-                        btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2.5 1.5L11 6.5L2.5 11.5V1.5Z" fill="rgba(0,207,255,.92)"/></svg>';
-                        btn.disabled = false;
-                        btn.style.opacity = '1';
-                        btn.style.cursor = 'pointer';
-                        if (lbl) lbl.textContent = 'Play';
-                        console.log('❌ [VISION DEVICE] Play failed - button set to Play');
-                    }
+                    setAudioBtnState(document.getElementById('btnAudio'), 'paused');
+                    console.log('❌ [VISION DEVICE] Play failed - button set to Play');
                 });
             } catch (err) {
                 console.error('[AUDIO] Error processing audio:', err);

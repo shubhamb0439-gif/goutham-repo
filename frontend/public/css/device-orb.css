@@ -560,3 +560,21 @@ html,body{
   color:#888;
   margin-top:2px;
 }
+
+.audio-btn-panel:disabled{
+  opacity:0.38;
+  cursor:not-allowed;
+  pointer-events:none;
+}
+.audio-btn-panel:disabled:hover{
+  transform:none;
+  background:rgba(0,210,255,0.15);
+  border-color:rgba(0,210,255,0.4);
+  box-shadow:none;
+}
+.audio-btn-panel.playing{
+  background:rgba(0,207,255,0.22);
+  border-color:rgba(0,207,255,0.7);
+  box-shadow:0 0 14px rgba(0,207,255,0.38);
+  color:#00cfff;
+}

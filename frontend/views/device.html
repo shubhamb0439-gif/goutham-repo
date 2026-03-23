@@ -97,14 +97,6 @@
 
         <!-- Response box -->
         <div class="resp" id="responseCard">
-            <div class="audio-ctrl-wrap">
-                <div class="pbtn" id="btnAudio" style="opacity:0.38;cursor:not-allowed;" title="Audio playback (enabled when scribe plays summary)">
-                    <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                        <path d="M2.5 1.5L11 6.5L2.5 11.5V1.5Z" fill="rgba(0,207,255,.92)" />
-                    </svg>
-                </div>
-                <span class="audio-lbl" id="audioLabel">Audio</span>
-            </div>
             <div class="rtxt" id="responseText">Your XR assistant response appears here...</div>
         </div>
 
@@ -166,6 +158,13 @@
                         <path d="M11 6l3-2v8l-3-2" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
                     </svg>
                     <span>Hide Video</span>
+                </button>
+
+                <button class="control-btn audio-btn-panel" id="btnAudio" disabled title="Enabled when scribe plays summary">
+                    <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                        <path d="M2.5 1.5L11 6.5L2.5 11.5V1.5Z" fill="currentColor" />
+                    </svg>
+                    <span id="audioLabel">Audio</span>
                 </button>
             </div>
 
