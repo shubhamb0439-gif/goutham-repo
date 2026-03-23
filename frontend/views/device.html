@@ -97,10 +97,13 @@
 
         <!-- Response box -->
         <div class="resp" id="responseCard">
-            <div class="pbtn" id="btnAudio" style="cursor:pointer;">
-                <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                    <path d="M2.5 1.5L11 6.5L2.5 11.5V1.5Z" fill="rgba(0,207,255,.92)" />
-                </svg>
+            <div class="audio-ctrl-wrap">
+                <div class="pbtn" id="btnAudio" style="opacity:0.38;cursor:not-allowed;" title="Audio playback (enabled when scribe plays summary)">
+                    <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                        <path d="M2.5 1.5L11 6.5L2.5 11.5V1.5Z" fill="rgba(0,207,255,.92)" />
+                    </svg>
+                </div>
+                <span class="audio-lbl" id="audioLabel">Audio</span>
             </div>
             <div class="rtxt" id="responseText">Your XR assistant response appears here...</div>
         </div>
@@ -250,6 +253,32 @@
             await deferredPrompt.userChoice;
             deferredPrompt = null;
         });
+    </script>
+
+    <!-- Platform logout cross-tab listener -->
+    <script>
+      (function () {
+        function handleXrLogout() {
+          console.log('[DEVICE] Platform logout detected, closing tab');
+          try { window.close(); } catch (e) {}
+          setTimeout(function () { window.location.href = '/platform'; }, 300);
+        }
+
+        try {
+          if (typeof BroadcastChannel !== 'undefined') {
+            var ch = new BroadcastChannel('xr_platform_auth');
+            ch.onmessage = function (e) {
+              if (e.data && e.data.type === 'xr_logout') handleXrLogout();
+            };
+          } else {
+            window.addEventListener('storage', function (e) {
+              if (e.key === 'xr_logout_signal') handleXrLogout();
+            });
+          }
+        } catch (err) {
+          console.warn('[DEVICE] Logout listener setup failed:', err);
+        }
+      })();
     </script>
 
     <!-- ✅ MANUAL LOGOUT: Logout button handler -->

@@ -2153,6 +2153,28 @@ if (loginForm) {
 }
 
 
+const _xrLogoutChannel = (() => {
+  try {
+    return typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('xr_platform_auth') : null;
+  } catch (e) {
+    return null;
+  }
+})();
+
+function broadcastPlatformLogout() {
+  try {
+    if (_xrLogoutChannel) {
+      _xrLogoutChannel.postMessage({ type: 'xr_logout', ts: Date.now() });
+      console.log('[PLATFORM] Logout broadcast sent to module tabs');
+    } else {
+      localStorage.setItem('xr_logout_signal', Date.now().toString());
+      localStorage.removeItem('xr_logout_signal');
+    }
+  } catch (e) {
+    console.warn('[PLATFORM] Failed to broadcast logout:', e);
+  }
+}
+
 if (logoutBtn) {
   logoutBtn.addEventListener('click', async () => {
     try {
@@ -2161,7 +2183,6 @@ if (logoutBtn) {
         credentials: 'include',
       });
 
-      // ✅ FIX: Clear sessionStorage to prevent stale XR ID on next login
       try {
         sessionStorage.removeItem('XR_DEVICE_LAST_XR_ID_UI');
         sessionStorage.removeItem('xr-device-id');
@@ -2170,12 +2191,13 @@ if (logoutBtn) {
         console.warn('[PLATFORM] Failed to clear sessionStorage:', e);
       }
 
+      broadcastPlatformLogout();
+
       currentUser = null;
       showLoginForm();
     } catch (err) {
       console.error('Logout error:', err);
 
-      // ✅ FIX: Clear sessionStorage even if logout API fails
       try {
         sessionStorage.removeItem('XR_DEVICE_LAST_XR_ID_UI');
         sessionStorage.removeItem('xr-device-id');
@@ -2183,6 +2205,7 @@ if (logoutBtn) {
         console.warn('[PLATFORM] Failed to clear sessionStorage:', e);
       }
 
+      broadcastPlatformLogout();
       showLoginForm();
     }
   });
