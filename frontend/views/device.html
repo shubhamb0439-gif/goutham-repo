@@ -309,12 +309,12 @@
 
                     if (data.ok) {
                         console.log('[DEVICE] Logout successful, redirecting to login page');
-                        // Redirect to platform login page
-                        window.location.href = '/platform';
+                        history.replaceState(null, '', '/platform');
+                        window.location.replace('/platform');
                     } else {
                         console.error('[DEVICE] Logout failed:', data.message);
-                        // Still redirect to login page
-                        window.location.href = '/platform';
+                        history.replaceState(null, '', '/platform');
+                        window.location.replace('/platform');
                     }
                 } catch (err) {
                     console.error('[DEVICE] Logout error:', err);
@@ -327,11 +327,33 @@
                         console.warn('[DEVICE] Failed to clear sessionStorage:', e);
                     }
 
-                    // Still redirect to login page
-                    window.location.href = '/platform';
+                    history.replaceState(null, '', '/platform');
+                    window.location.replace('/platform');
                 }
             });
         }
+    </script>
+
+    <!-- Session guard: redirect to login if not authenticated when page loads -->
+    <script>
+        (function () {
+            fetch('/api/platform/me', {
+                method: 'GET',
+                credentials: 'include',
+                cache: 'no-store',
+                headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' }
+            }).then(function (res) {
+                if (res.status === 401 || res.status === 403) {
+                    console.log('[DEVICE] Not authenticated, redirecting to login');
+                    history.replaceState(null, '', '/platform');
+                    window.location.replace('/platform');
+                }
+            }).catch(function () {
+                console.warn('[DEVICE] Session check failed, redirecting to login');
+                history.replaceState(null, '', '/platform');
+                window.location.replace('/platform');
+            });
+        })();
     </script>
 
 
