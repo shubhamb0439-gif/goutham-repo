@@ -1631,8 +1631,12 @@ function stopStream() {
     pendingLocalIce = [];
 
     if (window.__dockMicStream) {
-        window.__dockMicStream.getTracks().forEach(t => { try { t.stop(); } catch(e) {} });
+        window.__dockMicStream.getTracks().forEach(function(t) { try { t.stop(); } catch(e) {} });
         window.__dockMicStream = null;
+    }
+    if (window.__dockMicPrewarmed) {
+        window.__dockMicPrewarmed.getTracks().forEach(function(t) { try { t.stop(); } catch(e) {} });
+        window.__dockMicPrewarmed = null;
     }
 
     // ✅ Stop quality monitor
@@ -2078,8 +2082,9 @@ function handleControlCommand(data) {
             console.log('[CONTROL] Executing mute command');
             if (muteBadge) muteBadge.style.display = 'block';
             if (videoElement) videoElement.muted = true;
-            if (window.__dockMicStream) {
-                window.__dockMicStream.getAudioTracks().forEach(t => { t.enabled = false; });
+            var _muteMicStream = window.__dockMicStream || window.__dockMicPrewarmed || null;
+            if (_muteMicStream) {
+                _muteMicStream.getAudioTracks().forEach(function(t) { t.enabled = false; });
             }
             break;
         case 'unmute':
@@ -2087,34 +2092,34 @@ function handleControlCommand(data) {
             if (muteBadge) muteBadge.style.display = 'none';
             if (videoElement) {
                 videoElement.muted = false;
-                if (videoElement.paused) {
-                    videoElement.play().catch(() => { });
-                }
             }
-            if (window.__dockMicStream) {
-                window.__dockMicStream.getAudioTracks().forEach(t => { t.enabled = true; });
-            } else {
-                navigator.mediaDevices.getUserMedia({ audio: true, video: false })
-                    .then(function(micStream) {
+            (function _activateDockMic() {
+                var micStream = window.__dockMicStream || window.__dockMicPrewarmed || null;
+                if (micStream) {
+                    micStream.getAudioTracks().forEach(function(t) { t.enabled = true; });
+                    if (!window.__dockMicStream) {
                         window.__dockMicStream = micStream;
-                        if (peerConnection && peerConnection.signalingState !== 'closed') {
-                            const senders = peerConnection.getSenders();
-                            const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
-                            const audioTrack = micStream.getAudioTracks()[0];
-                            if (audioTrack) {
-                                if (audioSender) {
-                                    audioSender.replaceTrack(audioTrack).catch(function(e) {
-                                        console.warn('[DOCK] replaceTrack failed, trying addTrack', e);
-                                        try { peerConnection.addTrack(audioTrack, micStream); } catch(e2) { console.warn('[DOCK] addTrack failed', e2); }
-                                    });
-                                } else {
-                                    try { peerConnection.addTrack(audioTrack, micStream); } catch(e) { console.warn('[DOCK] addTrack failed', e); }
-                                }
+                        window.__dockMicPrewarmed = null;
+                    }
+                    if (peerConnection && peerConnection.signalingState !== 'closed') {
+                        var senders = peerConnection.getSenders();
+                        var audioSender = senders.find(function(s) { return s.track && s.track.kind === 'audio'; });
+                        var audioTrack = micStream.getAudioTracks()[0];
+                        if (audioTrack) {
+                            if (audioSender) {
+                                audioSender.replaceTrack(audioTrack).catch(function(e) {
+                                    console.warn('[DOCK] replaceTrack failed, trying addTrack', e);
+                                    try { peerConnection.addTrack(audioTrack, micStream); } catch(e2) { console.warn('[DOCK] addTrack failed', e2); }
+                                });
+                            } else {
+                                try { peerConnection.addTrack(audioTrack, micStream); } catch(e) { console.warn('[DOCK] addTrack failed', e); }
                             }
                         }
-                    })
-                    .catch(function(e) { console.warn('[DOCK] Mic access denied or unavailable:', e); });
-            }
+                    }
+                } else {
+                    console.warn('[DOCK] Mic not pre-warmed — unmute arrived before user clicked the page. Ask user to click anywhere first.');
+                }
+            })();
             break;
         case 'hide_video':
             console.log('[CONTROL] Executing hide_video command');
@@ -2203,6 +2208,27 @@ if (videoOverlay) {
 
 
 // =========================================
+// Pre-warm mic permission on first user interaction so getUserMedia works
+// when unmute arrives remotely (no user gesture at that point).
+(function() {
+    function _prewarmMic() {
+        document.removeEventListener('click', _prewarmMic, true);
+        document.removeEventListener('touchend', _prewarmMic, true);
+        if (window.__dockMicStream) return;
+        navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+            .then(function(stream) {
+                window.__dockMicPrewarmed = stream;
+                stream.getAudioTracks().forEach(t => { t.enabled = false; });
+                console.log('[DOCK] Mic pre-warmed (permission granted, track disabled until unmute)');
+            })
+            .catch(function(e) {
+                console.warn('[DOCK] Mic pre-warm failed (user may have denied):', e.name);
+            });
+    }
+    document.addEventListener('click', _prewarmMic, true);
+    document.addEventListener('touchend', _prewarmMic, true);
+})();
+
 window.addEventListener('load', async () => {
     console.log('[APP] Window loaded - initializing (manual connect + refresh-safe)');
 
