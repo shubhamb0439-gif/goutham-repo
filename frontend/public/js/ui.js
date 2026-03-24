@@ -507,7 +507,8 @@ function scheduleAutoReload(reason = 'unknown') {
 
     const now = Date.now();
     const last = Number(sessionStorage.getItem('lastAutoReloadTs') || 0);
-    if (now - last < MIN_RELOAD_INTERVAL_MS) {
+    const isManual = reason === 'user';
+    if (!isManual && now - last < MIN_RELOAD_INTERVAL_MS) {
         console.warn('[AUTO-RELOAD] Skipping (interval guard).', { sinceMs: now - last });
         return;
     }

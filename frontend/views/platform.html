@@ -793,7 +793,10 @@
   </div>
   <!-- ================== END PROFILE SIDE PANEL ========================== -->
 
-
+  <!-- Back-button guard: replace this page in history so pressing back skips /platform -->
+  <script>
+    history.replaceState(null, '', '/platform');
+  </script>
 
 </body>
 
