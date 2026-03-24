@@ -1630,6 +1630,10 @@ function stopStream() {
     pendingLocalAnswer = null;
     pendingLocalIce = [];
 
+    if (window.__dockMicStream) {
+        window.__dockMicStream.getTracks().forEach(t => { try { t.stop(); } catch(e) {} });
+        window.__dockMicStream = null;
+    }
 
     // ✅ Stop quality monitor
     if (window.__stopQuality) {
@@ -2074,13 +2078,42 @@ function handleControlCommand(data) {
             console.log('[CONTROL] Executing mute command');
             if (muteBadge) muteBadge.style.display = 'block';
             if (videoElement) videoElement.muted = true;
+            if (window.__dockMicStream) {
+                window.__dockMicStream.getAudioTracks().forEach(t => { t.enabled = false; });
+            }
             break;
         case 'unmute':
             console.log('[CONTROL] Executing unmute command');
             if (muteBadge) muteBadge.style.display = 'none';
             if (videoElement) {
                 videoElement.muted = false;
-                videoElement.play().catch(() => { });
+                if (videoElement.paused) {
+                    videoElement.play().catch(() => { });
+                }
+            }
+            if (window.__dockMicStream) {
+                window.__dockMicStream.getAudioTracks().forEach(t => { t.enabled = true; });
+            } else {
+                navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+                    .then(function(micStream) {
+                        window.__dockMicStream = micStream;
+                        if (peerConnection && peerConnection.signalingState !== 'closed') {
+                            const senders = peerConnection.getSenders();
+                            const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
+                            const audioTrack = micStream.getAudioTracks()[0];
+                            if (audioTrack) {
+                                if (audioSender) {
+                                    audioSender.replaceTrack(audioTrack).catch(function(e) {
+                                        console.warn('[DOCK] replaceTrack failed, trying addTrack', e);
+                                        try { peerConnection.addTrack(audioTrack, micStream); } catch(e2) { console.warn('[DOCK] addTrack failed', e2); }
+                                    });
+                                } else {
+                                    try { peerConnection.addTrack(audioTrack, micStream); } catch(e) { console.warn('[DOCK] addTrack failed', e); }
+                                }
+                            }
+                        }
+                    })
+                    .catch(function(e) { console.warn('[DOCK] Mic access denied or unavailable:', e); });
             }
             break;
         case 'hide_video':
