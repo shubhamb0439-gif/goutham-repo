@@ -2127,7 +2127,7 @@ if (loginForm) {
 
         // Check if user is a Provider - redirect to /device
         if (data.persona && data.persona.toLowerCase() === 'provider') {
-          window.location.href = '/device';
+          window.location.replace('/device');
           return;
         }
         await showDashboard(data.email);
