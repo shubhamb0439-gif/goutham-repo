@@ -1209,7 +1209,11 @@ function handleSignalMessage(data) {
             handleRemoteIceCandidate(data.data);
             break;
         case 'answer':
-            console.log('[WEBRTC] Received answer (unexpected for desktop) – ignoring');
+            console.log('[WEBRTC] Received answer from peer (renegotiation)');
+            if (peerConnection && peerConnection.signalingState === 'have-local-offer') {
+                peerConnection.setRemoteDescription(new RTCSessionDescription(data.data))
+                    .catch(function(e) { console.warn('[WEBRTC] setRemoteDescription(answer) failed:', e); });
+            }
             break;
         default:
             console.log('[WEBRTC] Unhandled signal type:', type);
@@ -1443,7 +1447,23 @@ function createPeerConnection() {
         }
     };
 
-
+    pc.onnegotiationneeded = async () => {
+        if (!currentRoom || !socket?.connected) return;
+        if (pc.signalingState !== 'stable') return;
+        try {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            socket.emit('signal', {
+                type: 'offer',
+                from: XR_ID,
+                roomId: currentRoom,
+                data: pc.localDescription,
+            });
+            console.log('[WEBRTC] Renegotiation offer sent (Dock mic track added)');
+        } catch (e) {
+            console.warn('[WEBRTC] onnegotiationneeded offer failed:', e);
+        }
+    };
 
 
 
