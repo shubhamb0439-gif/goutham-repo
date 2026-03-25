@@ -2228,6 +2228,80 @@ if (videoOverlay) {
 
 
 // =========================================
+// Dock Mute/Unmute button
+// =========================================
+(function() {
+    var btn = document.getElementById('dockMuteBtn');
+    if (!btn) return;
+
+    var dockMicMuted = true;
+
+    function updateDockMuteBtn() {
+        if (dockMicMuted) {
+            btn.textContent = 'Muted';
+            btn.classList.remove('bg-green-600', 'hover:bg-green-700', 'border-green-500/40');
+            btn.classList.add('bg-red-600', 'hover:bg-red-700', 'border-red-500/40');
+        } else {
+            btn.textContent = 'Unmuted';
+            btn.classList.remove('bg-red-600', 'hover:bg-red-700', 'border-red-500/40');
+            btn.classList.add('bg-green-600', 'hover:bg-green-700', 'border-green-500/40');
+        }
+    }
+
+    btn.addEventListener('click', async function() {
+        dockMicMuted = !dockMicMuted;
+        updateDockMuteBtn();
+
+        if (!dockMicMuted) {
+            try {
+                var micStream = window.__dockMicStream || window.__dockMicPrewarmed || null;
+
+                if (!micStream) {
+                    micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                    window.__dockMicStream = micStream;
+                }
+
+                micStream.getAudioTracks().forEach(function(t) { t.enabled = true; });
+
+                if (!window.__dockMicStream) {
+                    window.__dockMicStream = micStream;
+                    window.__dockMicPrewarmed = null;
+                }
+
+                if (peerConnection && peerConnection.signalingState !== 'closed') {
+                    var senders = peerConnection.getSenders();
+                    var audioSender = senders.find(function(s) { return s.track && s.track.kind === 'audio'; });
+                    var audioTrack = micStream.getAudioTracks()[0];
+
+                    if (audioTrack) {
+                        if (audioSender) {
+                            audioSender.replaceTrack(audioTrack).catch(function(e) {
+                                console.warn('[DOCK-BTN] replaceTrack failed, trying addTrack', e);
+                                try { peerConnection.addTrack(audioTrack, micStream); } catch(e2) { console.warn('[DOCK-BTN] addTrack failed', e2); }
+                            });
+                        } else {
+                            try { peerConnection.addTrack(audioTrack, micStream); } catch(e) { console.warn('[DOCK-BTN] addTrack failed', e); }
+                        }
+                    }
+                }
+
+                console.log('[DOCK-BTN] Mic enabled, audio track added to peer connection');
+            } catch(e) {
+                console.warn('[DOCK-BTN] getUserMedia failed:', e.name, e.message);
+                dockMicMuted = true;
+                updateDockMuteBtn();
+            }
+        } else {
+            var micStream = window.__dockMicStream || window.__dockMicPrewarmed || null;
+            if (micStream) {
+                micStream.getAudioTracks().forEach(function(t) { t.enabled = false; });
+            }
+            console.log('[DOCK-BTN] Mic muted');
+        }
+    });
+})();
+
+// =========================================
 // Pre-warm mic permission on first user interaction so getUserMedia works
 // when unmute arrives remotely (no user gesture at that point).
 (function() {
