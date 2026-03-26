@@ -260,6 +260,8 @@ let micMuted = true;
 let videoVisible = true;
 let isListening = false;
 let lastRecognizedCommand = '';
+let micActive = false;
+let micActiveSince = 0;
 
 // Audio playback state
 let currentAudio = null;
@@ -1514,6 +1516,8 @@ function startVoiceRecognition() {
     }
 
     isListening = true;
+    micActive = true;
+    micActiveSince = Date.now();
     try {
         rec.start();
         msg('System', 'Voice recognition started');
@@ -1540,6 +1544,7 @@ function stopVoiceRecognition() {
         return;
     }
     isListening = false;
+    micActive = false;
     try {
         if (rec) {
             rec.stop();
@@ -1675,7 +1680,9 @@ function processVoiceCommand(cmd) {
     }
 
     if (isPlayAudioCmd) {
-        if (currentAudio && currentAudio.paused && !currentAudio.ended) {
+        const micWarmupMs = 800;
+        const pausedByMic = micActive && (Date.now() - micActiveSince) < micWarmupMs;
+        if (currentAudio && currentAudio.paused && !currentAudio.ended && !pausedByMic) {
             currentAudio.play().then(() => {
                 msg('Voice', 'Resuming audio');
                 if (orbUI) orbUI.updateResponse('Resuming audio', false);
@@ -1687,6 +1694,8 @@ function processVoiceCommand(cmd) {
             msg('Voice', 'No audio to play');
         } else if (currentAudio.ended) {
             msg('Voice', 'Audio has finished');
+        } else if (pausedByMic) {
+            msg('Voice', 'Audio paused by mic — ignoring play command');
         } else {
             msg('Voice', 'Audio already playing');
         }
